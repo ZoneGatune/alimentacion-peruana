@@ -1,7 +1,9 @@
 const express = require('express');
 const path = require('path');
-const fs = require('fs');
 const multer = require('multer');
+const session = require('express-session');
+const PgSession = require('connect-pg-simple')(session);
+const bcrypt = require('bcryptjs');
 const { Pool } = require('pg');
 const pdfParse = require('pdf-parse');
 const mammoth = require('mammoth');
@@ -31,12 +33,28 @@ if (process.env.NODE_ENV !== 'production') {
 app.use(express.json({ limit: '5mb' }));
 
 app.use('/api', (req, res, next) => {
-  res.set('Access-Control-Allow-Origin', '*');
+  res.set('Access-Control-Allow-Origin', req.get('Origin') || '*');
+  res.set('Access-Control-Allow-Credentials', 'true');
   res.set('Access-Control-Allow-Methods', 'GET,POST,DELETE,OPTIONS');
   res.set('Access-Control-Allow-Headers', 'Content-Type');
   if (req.method === 'OPTIONS') return res.sendStatus(204);
   next();
 });
+
+app.use(
+  session({
+    store: new PgSession({ pool, tableName: 'user_sessions' }),
+    secret: process.env.SESSION_SECRET || 'dev-secret-change-me',
+    resave: false,
+    saveUninitialized: false,
+    cookie: {
+      httpOnly: true,
+      sameSite: 'lax',
+      secure: process.env.NODE_ENV === 'production',
+      maxAge: 1000 * 60 * 60 * 24 * 7,
+    },
+  })
+);
 
 app.use(express.static(path.join(__dirname, 'public')));
 
@@ -73,15 +91,13 @@ function toVectorLiteral(values) {
 async function extractFromBuffer(buffer, mimetype, originalName) {
   const lower = (originalName || '').toLowerCase();
   if (mimetype === 'application/pdf' || lower.endsWith('.pdf')) {
-    const out = await pdfParse(buffer);
-    return out.text || '';
+    return (await pdfParse(buffer)).text || '';
   }
   if (
     mimetype === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' ||
     lower.endsWith('.docx')
   ) {
-    const out = await mammoth.extractRawText({ buffer });
-    return out.value || '';
+    return (await mammoth.extractRawText({ buffer })).value || '';
   }
   if (mimetype === 'text/plain' || lower.endsWith('.txt') || lower.endsWith('.md')) {
     return buffer.toString('utf-8');
@@ -90,9 +106,7 @@ async function extractFromBuffer(buffer, mimetype, originalName) {
     const res = await ai.models.generateContent({
       model: VISION_MODEL,
       contents: [
-        {
-          inlineData: { data: buffer.toString('base64'), mimeType: mimetype },
-        },
+        { inlineData: { data: buffer.toString('base64'), mimeType: mimetype } },
         `Eres un nutricionista experto en cocina peruana. Analiza esta imagen y extrae, en español, toda la información útil para una base de datos de alimentación saludable y dietas para bajar de peso. Si ves un plato o alimento, indica:
 - Nombre probable del plato (especialmente si es peruano: ceviche, lomo saltado, ají de gallina, quinua, etc.).
 - Ingredientes visibles y estimados.
@@ -110,9 +124,7 @@ Si no es comida, describe la imagen normalmente. Sé exhaustivo: este texto se u
 }
 
 async function extractFromUrl(url) {
-  const r = await fetch(url, {
-    headers: { 'User-Agent': 'Mozilla/5.0 AlimentacionPeruanaBot/1.0' },
-  });
+  const r = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0 AlimentacionPeruanaBot/1.0' } });
   if (!r.ok) throw new Error(`No se pudo descargar (${r.status})`);
   const ct = r.headers.get('content-type') || '';
   if (ct.includes('application/pdf')) {
@@ -130,13 +142,13 @@ async function extractFromUrl(url) {
 async function ingest(sourceType, sourceName, text) {
   const chunks = chunkText(text);
   if (chunks.length === 0) throw new Error('No se extrajo texto del contenido.');
-
+  const published = sourceType === 'ai';
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
     const docRes = await client.query(
-      'INSERT INTO documents (source_type, source_name) VALUES ($1, $2) RETURNING id',
-      [sourceType, sourceName]
+      'INSERT INTO documents (source_type, source_name, published) VALUES ($1, $2, $3) RETURNING id',
+      [sourceType, sourceName, published]
     );
     const docId = docRes.rows[0].id;
     for (let idx = 0; idx < chunks.length; idx++) {
@@ -147,7 +159,7 @@ async function ingest(sourceType, sourceName, text) {
       );
     }
     await client.query('COMMIT');
-    return { documentId: docId, chunks: chunks.length };
+    return { documentId: docId, chunks: chunks.length, published };
   } catch (e) {
     await client.query('ROLLBACK');
     throw e;
@@ -155,43 +167,6 @@ async function ingest(sourceType, sourceName, text) {
     client.release();
   }
 }
-
-app.post('/api/upload', upload.single('file'), async (req, res) => {
-  try {
-    if (!req.file) return res.status(400).json({ error: 'No se recibió archivo.' });
-    const text = await extractFromBuffer(req.file.buffer, req.file.mimetype, req.file.originalname);
-    const result = await ingest('file', req.file.originalname, text);
-    res.json(result);
-  } catch (e) {
-    console.error(e);
-    res.status(500).json({ error: e.message });
-  }
-});
-
-app.post('/api/url', async (req, res) => {
-  try {
-    const { url } = req.body || {};
-    if (!url) return res.status(400).json({ error: 'Falta url.' });
-    const { text, name } = await extractFromUrl(url);
-    const result = await ingest('url', name + ' (' + url + ')', text);
-    res.json(result);
-  } catch (e) {
-    console.error(e);
-    res.status(500).json({ error: e.message });
-  }
-});
-
-app.post('/api/text', async (req, res) => {
-  try {
-    const { title, text } = req.body || {};
-    if (!text) return res.status(400).json({ error: 'Falta texto.' });
-    const result = await ingest('text', title || 'Nota sin título', text);
-    res.json(result);
-  } catch (e) {
-    console.error(e);
-    res.status(500).json({ error: e.message });
-  }
-});
 
 async function searchByVector(vec, k) {
   const limit = Math.min(Math.max(parseInt(k) || 5, 1), 20);
@@ -201,6 +176,7 @@ async function searchByVector(vec, k) {
            1 - (c.embedding <=> $1::vector) AS similarity
     FROM chunks c
     JOIN documents d ON d.id = c.document_id
+    WHERE d.published = TRUE
     ORDER BY c.embedding <=> $1::vector
     LIMIT $2`;
   const r = await pool.query(sql, [toVectorLiteral(vec), limit]);
@@ -237,7 +213,6 @@ async function semanticSearch(query, k) {
   let results = await searchByVector(vec, k);
   let generated = false;
   const best = results[0]?.similarity || 0;
-
   if (best < SIMILARITY_THRESHOLD) {
     try {
       const aiText = await askGeminiAboutFood(query);
@@ -253,6 +228,87 @@ async function semanticSearch(query, k) {
   return { results, generated };
 }
 
+// ---------- Auth ----------
+async function ensureSeedAdmin() {
+  const u = process.env.ADMIN_USERNAME;
+  const p = process.env.ADMIN_PASSWORD;
+  if (!u || !p) return;
+  const hash = await bcrypt.hash(p, 10);
+  await pool.query(
+    `INSERT INTO admins (username, password_hash) VALUES ($1, $2)
+     ON CONFLICT (username) DO UPDATE SET password_hash = EXCLUDED.password_hash`,
+    [u, hash]
+  );
+  console.log(`Admin "${u}" listo.`);
+}
+
+function requireAdmin(req, res, next) {
+  if (req.session && req.session.adminId) return next();
+  return res.status(401).json({ error: 'No autenticado.' });
+}
+
+app.post('/api/admin/login', async (req, res) => {
+  try {
+    const { username, password } = req.body || {};
+    if (!username || !password) return res.status(400).json({ error: 'Faltan datos.' });
+    const r = await pool.query('SELECT * FROM admins WHERE username = $1', [username]);
+    const admin = r.rows[0];
+    if (!admin || !(await bcrypt.compare(password, admin.password_hash))) {
+      return res.status(401).json({ error: 'Credenciales inválidas.' });
+    }
+    req.session.adminId = admin.id;
+    req.session.adminUsername = admin.username;
+    res.json({ ok: true, username: admin.username });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post('/api/admin/logout', (req, res) => {
+  req.session.destroy(() => res.json({ ok: true }));
+});
+
+app.get('/api/admin/me', (req, res) => {
+  if (req.session && req.session.adminId) {
+    return res.json({ authenticated: true, username: req.session.adminUsername });
+  }
+  res.json({ authenticated: false });
+});
+
+// ---------- Ingestion ----------
+app.post('/api/upload', upload.single('file'), async (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ error: 'No se recibió archivo.' });
+    const text = await extractFromBuffer(req.file.buffer, req.file.mimetype, req.file.originalname);
+    res.json(await ingest('file', req.file.originalname, text));
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post('/api/url', async (req, res) => {
+  try {
+    const { url } = req.body || {};
+    if (!url) return res.status(400).json({ error: 'Falta url.' });
+    const { text, name } = await extractFromUrl(url);
+    res.json(await ingest('url', name + ' (' + url + ')', text));
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post('/api/text', async (req, res) => {
+  try {
+    const { title, text } = req.body || {};
+    if (!text) return res.status(400).json({ error: 'Falta texto.' });
+    res.json(await ingest('text', title || 'Nota sin título', text));
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ---------- Search (público, solo publicados) ----------
 app.get('/api/search', async (req, res) => {
   try {
     const query = req.query.q || req.query.query;
@@ -260,7 +316,6 @@ app.get('/api/search', async (req, res) => {
     const { results, generated } = await semanticSearch(String(query), req.query.k);
     res.json({ query, generated, results });
   } catch (e) {
-    console.error(e);
     res.status(500).json({ error: e.message });
   }
 });
@@ -272,25 +327,25 @@ app.post('/api/search', async (req, res) => {
     const { results, generated } = await semanticSearch(query, k);
     res.json({ query, generated, results });
   } catch (e) {
-    console.error(e);
     res.status(500).json({ error: e.message });
   }
 });
 
-app.get('/api/documents', async (_req, res) => {
+// ---------- Admin: ver / aprobar / publicar ----------
+app.get('/api/documents', requireAdmin, async (_req, res) => {
   try {
     const r = await pool.query(`
-      SELECT d.id, d.source_type, d.source_name, d.created_at,
+      SELECT d.id, d.source_type, d.source_name, d.created_at, d.published,
              COUNT(c.id)::int AS chunks
       FROM documents d LEFT JOIN chunks c ON c.document_id = d.id
-      GROUP BY d.id ORDER BY d.created_at DESC`);
+      GROUP BY d.id ORDER BY d.published ASC, d.created_at DESC`);
     res.json({ documents: r.rows });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
 });
 
-app.get('/api/documents/:id', async (req, res) => {
+app.get('/api/documents/:id', requireAdmin, async (req, res) => {
   try {
     const docRes = await pool.query('SELECT * FROM documents WHERE id = $1', [req.params.id]);
     if (docRes.rows.length === 0) return res.status(404).json({ error: 'No encontrado.' });
@@ -304,7 +359,25 @@ app.get('/api/documents/:id', async (req, res) => {
   }
 });
 
-app.delete('/api/documents/:id', async (req, res) => {
+app.post('/api/documents/:id/publish', requireAdmin, async (req, res) => {
+  try {
+    await pool.query('UPDATE documents SET published = TRUE WHERE id = $1', [req.params.id]);
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post('/api/documents/:id/unpublish', requireAdmin, async (req, res) => {
+  try {
+    await pool.query('UPDATE documents SET published = FALSE WHERE id = $1', [req.params.id]);
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.delete('/api/documents/:id', requireAdmin, async (req, res) => {
   try {
     await pool.query('DELETE FROM documents WHERE id = $1', [req.params.id]);
     res.json({ ok: true });
@@ -317,22 +390,22 @@ app.get('/api', (_req, res) => {
   res.json({
     name: 'Alimentación Peruana — API de búsqueda semántica',
     endpoints: {
-      'GET  /api/search?q=texto&k=5': 'Búsqueda semántica (recomendado para integraciones).',
+      'GET  /api/search?q=texto&k=5': 'Búsqueda semántica (solo contenido publicado).',
       'POST /api/search': 'Body JSON: { "query": "texto", "k": 5 }',
-      'POST /api/text': 'Body JSON: { "title": "...", "text": "..." } — guarda una nota.',
-      'POST /api/url': 'Body JSON: { "url": "https://..." } — descarga e indexa una página.',
-      'POST /api/upload': 'multipart/form-data con campo "file" (PDF, DOCX, imagen, txt, md).',
-      'GET  /api/documents': 'Lista todos los documentos guardados.',
-      'DELETE /api/documents/:id': 'Elimina un documento y sus fragmentos.',
-    },
-    cors: 'habilitado para todos los orígenes',
-    response_format: {
-      results: [
-        { id: 1, document_id: 1, source_type: 'file|url|text', source_name: '...', content: '...', similarity: 0.87 },
-      ],
+      'POST /api/text|url|upload': 'Cargar contenido (queda sin publicar hasta aprobación).',
+      'POST /api/admin/login': 'Body JSON: { "username", "password" }',
+      'POST /api/admin/logout': 'Cierra la sesión.',
+      'GET  /api/admin/me': 'Estado de la sesión.',
+      'GET  /api/documents': '[admin] Lista todo el contenido.',
+      'GET  /api/documents/:id': '[admin] Ver fragmentos.',
+      'POST /api/documents/:id/publish': '[admin] Publicar.',
+      'POST /api/documents/:id/unpublish': '[admin] Despublicar.',
+      'DELETE /api/documents/:id': '[admin] Eliminar.',
     },
   });
 });
+
+ensureSeedAdmin().catch((e) => console.error('Seed admin error:', e.message));
 
 app.listen(PORT, HOST, () => {
   console.log(`Vector DB server running at http://${HOST}:${PORT}`);

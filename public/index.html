@@ -8,13 +8,18 @@
 </head>
 <body>
   <header>
+    <div class="auth-bar">
+      <span id="auth-state"></span>
+      <button id="auth-btn" class="ghost">Acceso administrador</button>
+    </div>
     <h1>Alimentación Peruana</h1>
     <p class="tagline">Base nutricional inteligente: platos peruanos, nutrientes y dietas para bajar de peso.</p>
   </header>
 
   <main>
     <section class="card">
-      <h2>1. Guardar contenido</h2>
+      <h2>1. Aportar contenido</h2>
+      <p class="hint">El contenido subido por archivo o nota necesita ser aprobado por un administrador antes de aparecer en las búsquedas. Las respuestas generadas por la IA se publican automáticamente.</p>
       <div class="tabs">
         <button class="tab active" data-tab="file">Archivo</button>
         <button class="tab" data-tab="url">Página web</button>
@@ -24,13 +29,13 @@
       <form id="form-file" class="panel active" enctype="multipart/form-data">
         <label>PDF, Word (.docx), imagen, .txt o .md</label>
         <input type="file" name="file" accept=".pdf,.docx,.txt,.md,image/*" required />
-        <button type="submit">Guardar</button>
+        <button type="submit">Enviar para aprobación</button>
       </form>
 
       <form id="form-url" class="panel">
         <label>URL de la página</label>
         <input type="url" name="url" placeholder="https://ejemplo.com/articulo" required />
-        <button type="submit">Descargar y guardar</button>
+        <button type="submit">Enviar para aprobación</button>
       </form>
 
       <form id="form-text" class="panel">
@@ -38,7 +43,7 @@
         <input type="text" name="title" placeholder="Mi nota" />
         <label>Texto</label>
         <textarea name="text" rows="6" required placeholder="Escribe o pega cualquier texto..."></textarea>
-        <button type="submit">Guardar nota</button>
+        <button type="submit">Enviar para aprobación</button>
       </form>
 
       <div id="upload-status" class="status"></div>
@@ -53,16 +58,38 @@
       <div id="results"></div>
     </section>
 
-    <section class="card">
-      <h2>3. Contenido cargado</h2>
+    <section class="card admin-only" id="admin-section" hidden>
+      <h2>3. Contenido cargado <span class="tag tag-ai">solo admin</span></h2>
       <div class="docs-controls">
         <input type="text" id="docs-filter" placeholder="Filtrar por nombre o tipo..." />
+        <select id="docs-status">
+          <option value="all">Todos</option>
+          <option value="pending">Pendientes</option>
+          <option value="published">Publicados</option>
+        </select>
         <button id="refresh-docs" class="ghost">Actualizar</button>
       </div>
       <p class="docs-summary" id="docs-summary"></p>
       <ul id="docs"></ul>
     </section>
   </main>
+
+  <div id="login-modal" class="modal" hidden>
+    <div class="modal-card">
+      <h3>Acceso de administrador</h3>
+      <form id="login-form">
+        <label>Usuario</label>
+        <input type="text" name="username" required autocomplete="username" />
+        <label>Contraseña</label>
+        <input type="password" name="password" required autocomplete="current-password" />
+        <div class="modal-actions">
+          <button type="button" id="login-cancel" class="ghost">Cancelar</button>
+          <button type="submit">Entrar</button>
+        </div>
+        <p id="login-error" class="status err"></p>
+      </form>
+    </div>
+  </div>
 
   <footer><small>Postgres + pgvector · Embeddings con Gemini</small></footer>
   <script src="/app.js"></script>
