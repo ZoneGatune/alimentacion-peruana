@@ -290,6 +290,20 @@ app.get('/api/documents', async (_req, res) => {
   }
 });
 
+app.get('/api/documents/:id', async (req, res) => {
+  try {
+    const docRes = await pool.query('SELECT * FROM documents WHERE id = $1', [req.params.id]);
+    if (docRes.rows.length === 0) return res.status(404).json({ error: 'No encontrado.' });
+    const chunks = await pool.query(
+      'SELECT id, chunk_index, content FROM chunks WHERE document_id = $1 ORDER BY chunk_index',
+      [req.params.id]
+    );
+    res.json({ document: docRes.rows[0], chunks: chunks.rows });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 app.delete('/api/documents/:id', async (req, res) => {
   try {
     await pool.query('DELETE FROM documents WHERE id = $1', [req.params.id]);

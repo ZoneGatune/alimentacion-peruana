@@ -94,36 +94,102 @@ $('#form-search').addEventListener('submit', async (e) => {
   }
 });
 
+let allDocs = [];
+
 async function loadDocs() {
   const r = await fetch('/api/documents');
   const data = await r.json();
+  allDocs = data.documents;
+  renderDocs();
+}
+
+function renderDocs() {
   const ul = $('#docs');
-  if (!data.documents.length) {
-    ul.innerHTML = '<li><em>Aún no hay documentos.</em></li>';
+  const summary = $('#docs-summary');
+  const filter = ($('#docs-filter').value || '').toLowerCase();
+  const docs = allDocs.filter(
+    (d) => !filter || d.source_name.toLowerCase().includes(filter) || d.source_type.toLowerCase().includes(filter)
+  );
+  const totalChunks = allDocs.reduce((s, d) => s + d.chunks, 0);
+  summary.textContent = allDocs.length
+    ? `${allDocs.length} documento(s) · ${totalChunks} fragmento(s) en total${filter ? ` · ${docs.length} coinciden` : ''}`
+    : '';
+  if (!allDocs.length) {
+    ul.innerHTML = '<li><em>Aún no hay contenido cargado.</em></li>';
     return;
   }
-  ul.innerHTML = data.documents
+  if (!docs.length) {
+    ul.innerHTML = '<li><em>Ningún documento coincide con el filtro.</em></li>';
+    return;
+  }
+  ul.innerHTML = docs
     .map(
       (d) => `
-    <li>
-      <span>
-        <strong>${escapeHtml(d.source_name)}</strong>
-        <span class="doc-meta"> · ${d.source_type} · ${d.chunks} fragmentos · ${new Date(d.created_at).toLocaleString()}</span>
-      </span>
-      <button data-id="${d.id}">Eliminar</button>
+    <li class="doc" data-id="${d.id}">
+      <div class="doc-row">
+        <div class="info">
+          <strong>${escapeHtml(d.source_name)}</strong>
+          <span class="tag tag-${d.source_type}">${d.source_type}</span>
+          <div class="doc-meta">${d.chunks} fragmento(s) · ${new Date(d.created_at).toLocaleString()}</div>
+        </div>
+        <div class="doc-actions">
+          <button class="view" data-id="${d.id}">Ver</button>
+          <button class="delete" data-id="${d.id}">Eliminar</button>
+        </div>
+      </div>
     </li>`
     )
     .join('');
-  ul.querySelectorAll('button').forEach((b) =>
+
+  ul.querySelectorAll('.delete').forEach((b) =>
     b.addEventListener('click', async () => {
       if (!confirm('¿Eliminar este documento?')) return;
       await fetch('/api/documents/' + b.dataset.id, { method: 'DELETE' });
       loadDocs();
     })
   );
+  ul.querySelectorAll('.view').forEach((b) =>
+    b.addEventListener('click', () => toggleView(b))
+  );
+}
+
+async function toggleView(btn) {
+  const li = btn.closest('.doc');
+  const existing = li.querySelector('.doc-content');
+  if (existing) {
+    existing.remove();
+    btn.textContent = 'Ver';
+    return;
+  }
+  btn.textContent = 'Cargando...';
+  btn.disabled = true;
+  try {
+    const r = await fetch('/api/documents/' + btn.dataset.id);
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.error || 'Error');
+    const html = data.chunks
+      .map(
+        (c) => `<div class="chunk">
+          <div class="chunk-label">Fragmento ${c.chunk_index + 1}</div>
+          <div>${escapeHtml(c.content)}</div>
+        </div>`
+      )
+      .join('');
+    const div = document.createElement('div');
+    div.className = 'doc-content';
+    div.innerHTML = html || '<em>Sin contenido.</em>';
+    li.appendChild(div);
+    btn.textContent = 'Ocultar';
+  } catch (e) {
+    alert('Error: ' + e.message);
+    btn.textContent = 'Ver';
+  } finally {
+    btn.disabled = false;
+  }
 }
 
 $('#refresh-docs').addEventListener('click', loadDocs);
+$('#docs-filter').addEventListener('input', renderDocs);
 
 function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));

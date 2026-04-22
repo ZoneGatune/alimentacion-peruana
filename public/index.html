@@ -54,8 +54,12 @@
     </section>
 
     <section class="card">
-      <h2>3. Documentos guardados</h2>
-      <button id="refresh-docs" class="ghost">Actualizar</button>
+      <h2>3. Contenido cargado</h2>
+      <div class="docs-controls">
+        <input type="text" id="docs-filter" placeholder="Filtrar por nombre o tipo..." />
+        <button id="refresh-docs" class="ghost">Actualizar</button>
+      </div>
+      <p class="docs-summary" id="docs-summary"></p>
       <ul id="docs"></ul>
     </section>
   </main>
