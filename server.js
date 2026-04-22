@@ -27,6 +27,15 @@ if (process.env.NODE_ENV !== 'production') {
   app.use((req, res, next) => { res.set('Cache-Control', 'no-store'); next(); });
 }
 app.use(express.json({ limit: '5mb' }));
+
+app.use('/api', (req, res, next) => {
+  res.set('Access-Control-Allow-Origin', '*');
+  res.set('Access-Control-Allow-Methods', 'GET,POST,DELETE,OPTIONS');
+  res.set('Access-Control-Allow-Headers', 'Content-Type');
+  if (req.method === 'OPTIONS') return res.sendStatus(204);
+  next();
+});
+
 app.use(express.static(path.join(__dirname, 'public')));
 
 function chunkText(text, size = 1200, overlap = 150) {
@@ -182,22 +191,39 @@ app.post('/api/text', async (req, res) => {
   }
 });
 
+async function semanticSearch(query, k) {
+  const vec = await embed(query);
+  const limit = Math.min(Math.max(parseInt(k) || 5, 1), 20);
+  const sql = `
+    SELECT c.id, c.content, c.chunk_index,
+           d.id AS document_id, d.source_type, d.source_name,
+           1 - (c.embedding <=> $1::vector) AS similarity
+    FROM chunks c
+    JOIN documents d ON d.id = c.document_id
+    ORDER BY c.embedding <=> $1::vector
+    LIMIT $2`;
+  const r = await pool.query(sql, [toVectorLiteral(vec), limit]);
+  return r.rows;
+}
+
+app.get('/api/search', async (req, res) => {
+  try {
+    const query = req.query.q || req.query.query;
+    if (!query) return res.status(400).json({ error: 'Falta el parámetro q.' });
+    const results = await semanticSearch(String(query), req.query.k);
+    res.json({ query, results });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
 app.post('/api/search', async (req, res) => {
   try {
     const { query, k } = req.body || {};
     if (!query) return res.status(400).json({ error: 'Falta query.' });
-    const vec = await embed(query);
-    const limit = Math.min(Math.max(parseInt(k) || 5, 1), 20);
-    const sql = `
-      SELECT c.id, c.content, c.chunk_index,
-             d.id AS document_id, d.source_type, d.source_name,
-             1 - (c.embedding <=> $1::vector) AS similarity
-      FROM chunks c
-      JOIN documents d ON d.id = c.document_id
-      ORDER BY c.embedding <=> $1::vector
-      LIMIT $2`;
-    const r = await pool.query(sql, [toVectorLiteral(vec), limit]);
-    res.json({ results: r.rows });
+    const results = await semanticSearch(query, k);
+    res.json({ query, results });
   } catch (e) {
     console.error(e);
     res.status(500).json({ error: e.message });
@@ -224,6 +250,27 @@ app.delete('/api/documents/:id', async (req, res) => {
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
+});
+
+app.get('/api', (_req, res) => {
+  res.json({
+    name: 'Alimentación Peruana — API de búsqueda semántica',
+    endpoints: {
+      'GET  /api/search?q=texto&k=5': 'Búsqueda semántica (recomendado para integraciones).',
+      'POST /api/search': 'Body JSON: { "query": "texto", "k": 5 }',
+      'POST /api/text': 'Body JSON: { "title": "...", "text": "..." } — guarda una nota.',
+      'POST /api/url': 'Body JSON: { "url": "https://..." } — descarga e indexa una página.',
+      'POST /api/upload': 'multipart/form-data con campo "file" (PDF, DOCX, imagen, txt, md).',
+      'GET  /api/documents': 'Lista todos los documentos guardados.',
+      'DELETE /api/documents/:id': 'Elimina un documento y sus fragmentos.',
+    },
+    cors: 'habilitado para todos los orígenes',
+    response_format: {
+      results: [
+        { id: 1, document_id: 1, source_type: 'file|url|text', source_name: '...', content: '...', similarity: 0.87 },
+      ],
+    },
+  });
 });
 
 app.listen(PORT, HOST, () => {
