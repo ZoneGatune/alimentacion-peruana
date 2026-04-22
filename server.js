@@ -82,7 +82,15 @@ async function extractFromBuffer(buffer, mimetype, originalName) {
         {
           inlineData: { data: buffer.toString('base64'), mimeType: mimetype },
         },
-        'Describe en español, con el mayor detalle posible, esta imagen: objetos, texto visible, contexto, colores, ambiente y cualquier dato útil para buscarla luego. Sé exhaustivo.',
+        `Eres un nutricionista experto en cocina peruana. Analiza esta imagen y extrae, en español, toda la información útil para una base de datos de alimentación saludable y dietas para bajar de peso. Si ves un plato o alimento, indica:
+- Nombre probable del plato (especialmente si es peruano: ceviche, lomo saltado, ají de gallina, quinua, etc.).
+- Ingredientes visibles y estimados.
+- Macronutrientes aproximados (calorías, proteínas, carbohidratos, grasas) por porción.
+- Aporte nutricional, vitaminas y minerales destacados.
+- Si es recomendable o no para bajar de peso, y por qué.
+- Sugerencias de versiones más saludables o tamaños de porción.
+- Cualquier texto visible (etiquetas, recetas, tablas nutricionales) transcrito literalmente.
+Si no es comida, describe la imagen normalmente. Sé exhaustivo: este texto se usará para búsqueda semántica.`,
       ],
     });
     return res.text || '';
