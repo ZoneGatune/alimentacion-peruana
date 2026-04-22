@@ -17,6 +17,8 @@ const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || '' });
 
 const EMBED_MODEL = 'gemini-embedding-001';
 const VISION_MODEL = 'gemini-2.5-flash';
+const TEXT_MODEL = 'gemini-2.5-flash';
+const SIMILARITY_THRESHOLD = 0.55;
 
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -191,8 +193,7 @@ app.post('/api/text', async (req, res) => {
   }
 });
 
-async function semanticSearch(query, k) {
-  const vec = await embed(query);
+async function searchByVector(vec, k) {
   const limit = Math.min(Math.max(parseInt(k) || 5, 1), 20);
   const sql = `
     SELECT c.id, c.content, c.chunk_index,
@@ -206,12 +207,58 @@ async function semanticSearch(query, k) {
   return r.rows;
 }
 
+async function askGeminiAboutFood(query) {
+  const prompt = `Eres un nutricionista experto en cocina peruana y dietas para bajar de peso.
+La siguiente consulta no se encontró en la base de datos local: "${query}".
+Responde en español con información completa y útil. Si se trata de un plato, ingrediente, dieta o tema nutricional, incluye:
+- Descripción y origen (especialmente si es peruano).
+- Ingredientes y forma de preparación cuando aplique.
+- Macronutrientes aproximados (calorías, proteínas, carbohidratos, grasas) por porción.
+- Vitaminas, minerales y beneficios.
+- Si conviene o no para una dieta de pérdida de peso, y por qué.
+- Recomendaciones de porción o versiones más saludables.
+Si la consulta no se relaciona con alimentación, responde igualmente con la mejor información disponible.
+Devuelve solo texto plano (sin markdown), claro y completo.`;
+  const models = [TEXT_MODEL, 'gemini-2.0-flash', 'gemini-flash-latest'];
+  let lastErr;
+  for (const model of models) {
+    try {
+      const res = await ai.models.generateContent({ model, contents: prompt });
+      if (res.text) return res.text;
+    } catch (e) {
+      lastErr = e;
+    }
+  }
+  throw lastErr || new Error('Sin respuesta de IA');
+}
+
+async function semanticSearch(query, k) {
+  const vec = await embed(query);
+  let results = await searchByVector(vec, k);
+  let generated = false;
+  const best = results[0]?.similarity || 0;
+
+  if (best < SIMILARITY_THRESHOLD) {
+    try {
+      const aiText = await askGeminiAboutFood(query);
+      if (aiText && aiText.trim()) {
+        await ingest('ai', `Generado por IA: ${query}`, aiText);
+        results = await searchByVector(vec, k);
+        generated = true;
+      }
+    } catch (e) {
+      console.error('Fallback IA falló:', e.message);
+    }
+  }
+  return { results, generated };
+}
+
 app.get('/api/search', async (req, res) => {
   try {
     const query = req.query.q || req.query.query;
     if (!query) return res.status(400).json({ error: 'Falta el parámetro q.' });
-    const results = await semanticSearch(String(query), req.query.k);
-    res.json({ query, results });
+    const { results, generated } = await semanticSearch(String(query), req.query.k);
+    res.json({ query, generated, results });
   } catch (e) {
     console.error(e);
     res.status(500).json({ error: e.message });
@@ -222,8 +269,8 @@ app.post('/api/search', async (req, res) => {
   try {
     const { query, k } = req.body || {};
     if (!query) return res.status(400).json({ error: 'Falta query.' });
-    const results = await semanticSearch(query, k);
-    res.json({ query, results });
+    const { results, generated } = await semanticSearch(query, k);
+    res.json({ query, generated, results });
   } catch (e) {
     console.error(e);
     res.status(500).json({ error: e.message });
