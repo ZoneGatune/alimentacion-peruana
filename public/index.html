@@ -3,33 +3,64 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Alimentación Peruana</title>
+  <title>Memoria Vectorial</title>
   <link rel="stylesheet" href="/styles.css" />
 </head>
 <body>
   <header>
-    <h1>Alimentación Peruana</h1>
-    <p class="tagline">Sabores tradicionales del Perú</p>
+    <h1>Memoria Vectorial</h1>
+    <p class="tagline">Guarda PDFs, Word, imágenes, páginas web y notas. Búscalas por significado.</p>
   </header>
+
   <main>
     <section class="card">
-      <h2>Bienvenido</h2>
-      <p>
-        Este proyecto está dedicado a la riqueza de la cocina peruana:
-        ceviche, lomo saltado, ají de gallina, anticuchos y mucho más.
-      </p>
+      <h2>1. Guardar contenido</h2>
+      <div class="tabs">
+        <button class="tab active" data-tab="file">Archivo</button>
+        <button class="tab" data-tab="url">Página web</button>
+        <button class="tab" data-tab="text">Nota</button>
+      </div>
+
+      <form id="form-file" class="panel active" enctype="multipart/form-data">
+        <label>PDF, Word (.docx), imagen, .txt o .md</label>
+        <input type="file" name="file" accept=".pdf,.docx,.txt,.md,image/*" required />
+        <button type="submit">Guardar</button>
+      </form>
+
+      <form id="form-url" class="panel">
+        <label>URL de la página</label>
+        <input type="url" name="url" placeholder="https://ejemplo.com/articulo" required />
+        <button type="submit">Descargar y guardar</button>
+      </form>
+
+      <form id="form-text" class="panel">
+        <label>Título (opcional)</label>
+        <input type="text" name="title" placeholder="Mi nota" />
+        <label>Texto</label>
+        <textarea name="text" rows="6" required placeholder="Escribe o pega cualquier texto..."></textarea>
+        <button type="submit">Guardar nota</button>
+      </form>
+
+      <div id="upload-status" class="status"></div>
     </section>
+
     <section class="card">
-      <h2>Próximamente</h2>
-      <ul>
-        <li>Recetas tradicionales</li>
-        <li>Información nutricional</li>
-        <li>Ingredientes regionales</li>
-      </ul>
+      <h2>2. Buscar</h2>
+      <form id="form-search">
+        <input type="text" name="query" placeholder="¿Qué quieres recordar?" required />
+        <button type="submit">Buscar</button>
+      </form>
+      <div id="results"></div>
+    </section>
+
+    <section class="card">
+      <h2>3. Documentos guardados</h2>
+      <button id="refresh-docs" class="ghost">Actualizar</button>
+      <ul id="docs"></ul>
     </section>
   </main>
-  <footer>
-    <small>&copy; 2026 Alimentación Peruana</small>
-  </footer>
+
+  <footer><small>Postgres + pgvector · Embeddings con Gemini</small></footer>
+  <script src="/app.js"></script>
 </body>
 </html>
