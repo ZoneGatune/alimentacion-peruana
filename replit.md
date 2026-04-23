@@ -1,19 +1,25 @@
-# Alimentación Peruana
+# Alimentacion Peruana
 
-Static landing page for the "Alimentación Peruana" project (Peruvian food).
+Aplicacion web con backend Flask y frontend estatico para construir una base nutricional de comida peruana con embeddings y busqueda semantica.
 
 ## Stack
-- Node.js 20
-- Express 4 serving static files from `public/`
+
+- Python 3.11
+- Flask
+- PostgreSQL 16 con pgvector
+- Gemini para embeddings, vision y respuestas fallback
 
 ## Run
-- Workflow: `Start application` runs `npm start` on port 5000 (host `0.0.0.0`).
-- Dev cache headers are disabled when `NODE_ENV !== "production"`.
+
+- Instalar dependencias con `pip install -r requirements.txt`
+- Iniciar con `python app.py` en el puerto 5000
 
 ## Layout
-- `server.js` — Express static server
-- `public/` — `index.html`, `styles.css`
-- `package.json` — npm dependencies and start script
+
+- `app.py` - backend Flask y API
+- `public/` - `index.html`, `styles.css`, `app.js`
+- `requirements.txt` - dependencias Python
 
 ## Deployment
-Configured as autoscale: build `npm install`, run `npm start`.
+
+Configurado para ejecutar `python app.py`.

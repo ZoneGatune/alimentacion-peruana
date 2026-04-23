@@ -1,97 +1,461 @@
 <!DOCTYPE html>
 <html lang="es">
-<head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Alimentación Peruana · Base Nutricional</title>
-  <link rel="stylesheet" href="/styles.css" />
-</head>
-<body>
-  <header>
-    <div class="auth-bar">
-      <span id="auth-state"></span>
-      <button id="auth-btn" class="ghost">Acceso administrador</button>
-    </div>
-    <h1>Alimentación Peruana</h1>
-    <p class="tagline">Base nutricional inteligente: platos peruanos, nutrientes y dietas para bajar de peso.</p>
-  </header>
-
-  <main>
-    <section class="card">
-      <h2>1. Aportar contenido</h2>
-      <p class="hint">El contenido subido por archivo o nota necesita ser aprobado por un administrador antes de aparecer en las búsquedas. Las respuestas generadas por la IA se publican automáticamente.</p>
-      <div class="tabs">
-        <button class="tab active" data-tab="file">Archivo</button>
-        <button class="tab" data-tab="url">Página web</button>
-        <button class="tab" data-tab="text">Nota</button>
-      </div>
-
-      <form id="form-file" class="panel active" enctype="multipart/form-data">
-        <label>PDF, Word (.docx), imagen, .txt o .md</label>
-        <input type="file" name="file" accept=".pdf,.docx,.txt,.md,image/*" required />
-        <button type="submit">Enviar para aprobación</button>
-      </form>
-
-      <form id="form-url" class="panel">
-        <label>URL de la página</label>
-        <input type="url" name="url" placeholder="https://ejemplo.com/articulo" required />
-        <button type="submit">Enviar para aprobación</button>
-      </form>
-
-      <form id="form-text" class="panel">
-        <label>Título (opcional)</label>
-        <input type="text" name="title" placeholder="Mi nota" />
-        <label>Texto</label>
-        <textarea name="text" rows="6" required placeholder="Escribe o pega cualquier texto..."></textarea>
-        <button type="submit">Enviar para aprobación</button>
-      </form>
-
-      <div id="upload-status" class="status"></div>
-    </section>
-
-    <section class="card">
-      <h2>2. Buscar</h2>
-      <form id="form-search">
-        <input type="text" name="query" placeholder="¿Qué quieres recordar?" required />
-        <button type="submit">Buscar</button>
-      </form>
-      <div id="results"></div>
-    </section>
-
-    <section class="card admin-only" id="admin-section" hidden>
-      <h2>3. Contenido cargado <span class="tag tag-ai">solo admin</span></h2>
-      <div class="docs-controls">
-        <input type="text" id="docs-filter" placeholder="Filtrar por nombre o tipo..." />
-        <select id="docs-status">
-          <option value="all">Todos</option>
-          <option value="pending">Pendientes</option>
-          <option value="published">Publicados</option>
-        </select>
-        <button id="refresh-docs" class="ghost">Actualizar</button>
-      </div>
-      <p class="docs-summary" id="docs-summary"></p>
-      <ul id="docs"></ul>
-    </section>
-  </main>
-
-  <div id="login-modal" class="modal" hidden>
-    <div class="modal-card">
-      <h3>Acceso de administrador</h3>
-      <form id="login-form">
-        <label>Usuario</label>
-        <input type="text" name="username" required autocomplete="username" />
-        <label>Contraseña</label>
-        <input type="password" name="password" required autocomplete="current-password" />
-        <div class="modal-actions">
-          <button type="button" id="login-cancel" class="ghost">Cancelar</button>
-          <button type="submit">Entrar</button>
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Biblioteca Comercial · SPA</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar">
+        <div class="brand-block">
+          <div class="brand-kicker">Sistema comercial</div>
+          <h1>Biblioteca Multimedia</h1>
+          <p>SPA para captar contenido, vender biblioteca, gestionar vendedores y exponer APIs.</p>
         </div>
-        <p id="login-error" class="status err"></p>
-      </form>
-    </div>
-  </div>
 
-  <footer><small>Postgres + pgvector · Embeddings con Gemini</small></footer>
-  <script src="/app.js"></script>
-</body>
+        <nav class="side-nav" aria-label="Módulos">
+          <button class="nav-link active" data-view="dashboard">
+            <span>Resumen ejecutivo</span>
+            <small>Estado del sistema</small>
+          </button>
+          <button class="nav-link" data-view="intake">
+            <span>Captura de contenido</span>
+            <small>Subidas y propuestas</small>
+          </button>
+          <button class="nav-link" data-view="intelligence">
+            <span>Búsqueda inteligente</span>
+            <small>Consulta semántica</small>
+          </button>
+          <button class="nav-link seller-nav" data-view="commercial" hidden>
+            <span>Catálogo comercial</span>
+            <small>Solo vendedor</small>
+          </button>
+          <button class="nav-link admin-nav" data-view="operations" hidden>
+            <span>Operaciones</span>
+            <small>Moderación y publicación</small>
+          </button>
+          <button class="nav-link admin-nav" data-view="taxonomy" hidden>
+            <span>Catálogo y taxonomías</span>
+            <small>Categorías y plataformas</small>
+          </button>
+          <button class="nav-link admin-nav" data-view="access" hidden>
+            <span>Empresas y vendedores</span>
+            <small>Control de acceso</small>
+          </button>
+          <button class="nav-link" data-view="api">
+            <span>Documentación API</span>
+            <small>Uso para desarrolladores</small>
+          </button>
+        </nav>
+
+        <div class="sidebar-note">
+          <strong>Modelo comercial</strong>
+          <p>Administra empresas, asigna vendedores y ofrece alternativas del catálogo desde un módulo separado.</p>
+        </div>
+      </aside>
+
+      <div class="workspace">
+        <header class="topbar">
+          <div>
+            <p class="topbar-kicker">Plataforma comercial</p>
+            <h2 id="current-view-name">Resumen ejecutivo</h2>
+            <p id="current-view-description" class="topbar-description">Vista general del sistema, accesos y módulos disponibles.</p>
+          </div>
+          <div class="auth-bar">
+            <span id="content-manager-auth-state"></span>
+            <button id="content-manager-auth-btn" class="ghost">Acceso gestor</button>
+            <span id="seller-auth-state"></span>
+            <button id="seller-auth-btn" class="ghost">Acceso vendedor</button>
+            <span id="auth-state"></span>
+            <button id="auth-btn" class="ghost">Acceso administrador</button>
+          </div>
+        </header>
+
+        <main class="workspace-body">
+          <section class="module-view active" data-view="dashboard">
+            <div class="module-subnav">
+              <button type="button" class="module-subnav-link active" data-view="dashboard" data-subview="overview">Vista general</button>
+              <button type="button" class="module-subnav-link" data-view="dashboard" data-subview="sessions">Sesiones</button>
+              <button type="button" class="module-subnav-link" data-view="dashboard" data-subview="system">Sistema y APIs</button>
+            </div>
+
+            <section class="hero-card module-section active" data-subview-section="overview">
+              <div>
+                <p class="hero-kicker">SPA modular</p>
+                <h3>Opera, vende y documenta desde un mismo sistema</h3>
+                <p>
+                  Esta interfaz organiza el producto en módulos: captura, búsqueda semántica, catálogo comercial para vendedores,
+                  operación administrativa y documentación de API para integraciones externas.
+                </p>
+              </div>
+              <div class="hero-actions">
+                <button type="button" class="go-view" data-go-view="intake">Capturar contenido</button>
+                <button type="button" class="ghost go-view" data-go-view="api">Ver APIs</button>
+              </div>
+            </section>
+
+            <section class="summary-grid module-section active" id="dashboard-stats" data-subview-section="overview"></section>
+
+            <section class="card module-section" data-subview-section="sessions">
+              <h3>Acceso actual</h3>
+              <div id="dashboard-session" class="info-grid"></div>
+            </section>
+
+            <section class="dual-grid module-section" data-subview-section="system">
+              <section class="card">
+                <h3>Módulos del sistema</h3>
+                <div id="dashboard-modules" class="info-grid"></div>
+              </section>
+              <section class="card">
+                <h3>API para desarrolladores</h3>
+                <div id="dashboard-api-preview" class="info-grid"></div>
+              </section>
+            </section>
+          </section>
+
+          <section class="module-view" data-view="intake">
+            <section class="card">
+              <h3>Captura y aportes</h3>
+              <p class="hint">Recibe archivos, páginas, notas y videos. Cada aporte queda listo para revisión y publicación.</p>
+              <div id="content-manager-note" class="notice-card" hidden>
+                Gestor autenticado: se usará tu correo guardado para las subidas y no tendrás que escribirlo en cada video.
+              </div>
+              <div class="tabs">
+                <button class="tab active" data-tab="video">Video social</button>
+                <button class="tab" data-tab="file">Archivo</button>
+                <button class="tab" data-tab="url">Página web</button>
+                <button class="tab" data-tab="text">Nota</button>
+              </div>
+
+              <form id="form-video" class="panel active">
+                <label>Embed del video de TikTok, Facebook o YouTube</label>
+                <textarea name="embedHtml" rows="6" placeholder='<iframe src="..."></iframe> o bloque embed completo' required></textarea>
+                <p class="hint compact">Pega el embed completo. El sistema resolverá la URL original, metadata y visualización reutilizable.</p>
+                <div class="manager-email-field">
+                  <label>Correo para avisarte cuando se apruebe</label>
+                  <input type="email" name="email" placeholder="correo@ejemplo.com" required />
+                </div>
+                <label>Categoría inicial (opcional)</label>
+                <select name="categoryId" class="category-select"></select>
+                <label>Plataforma o marca (opcional)</label>
+                <select name="platformId" class="platform-select"></select>
+                <label class="checkbox-row"><input type="checkbox" name="isTrending" /> Marcar como contenido en tendencia</label>
+                <label>Proponer nueva categoría o subcategoría (opcional)</label>
+                <input type="text" name="proposedCategoryName" placeholder="Ej. Escenas románticas mexicanas" />
+                <input type="text" name="proposedCategoryDescription" placeholder="Descripción breve de la categoría propuesta" />
+                <button type="submit">Enviar para aprobación</button>
+              </form>
+
+              <form id="form-file" class="panel" enctype="multipart/form-data">
+                <label>PDF, Word (.docx), imagen, .txt o .md</label>
+                <input type="file" name="file" accept=".pdf,.docx,.txt,.md,image/*" required />
+                <div class="manager-email-field">
+                  <label>Correo para avisarte cuando se apruebe</label>
+                  <input type="email" name="email" placeholder="correo@ejemplo.com" required />
+                </div>
+                <label>Categoría inicial (opcional)</label>
+                <select name="categoryId" class="category-select"></select>
+                <label>Plataforma o marca (opcional)</label>
+                <select name="platformId" class="platform-select"></select>
+                <label>URL del trailer (opcional, TikTok/Facebook/YouTube)</label>
+                <input type="url" name="trailerUrl" placeholder="https://www.youtube.com/watch?v=..." />
+                <label class="checkbox-row"><input type="checkbox" name="isTrending" /> Marcar como contenido en tendencia</label>
+                <label>Proponer nueva categoría o subcategoría (opcional)</label>
+                <input type="text" name="proposedCategoryName" placeholder="Ej. Romance asiático" />
+                <input type="text" name="proposedCategoryDescription" placeholder="Descripción breve de la categoría propuesta" />
+                <button type="submit">Enviar para aprobación</button>
+              </form>
+
+              <form id="form-url" class="panel">
+                <label>URL de la página</label>
+                <input type="url" name="url" placeholder="https://ejemplo.com/articulo" required />
+                <div class="manager-email-field">
+                  <label>Correo para avisarte cuando se apruebe</label>
+                  <input type="email" name="email" placeholder="correo@ejemplo.com" required />
+                </div>
+                <label>Categoría inicial (opcional)</label>
+                <select name="categoryId" class="category-select"></select>
+                <label>Plataforma o marca (opcional)</label>
+                <select name="platformId" class="platform-select"></select>
+                <label>URL del trailer (opcional, TikTok/Facebook/YouTube)</label>
+                <input type="url" name="trailerUrl" placeholder="https://www.youtube.com/watch?v=..." />
+                <label class="checkbox-row"><input type="checkbox" name="isTrending" /> Marcar como contenido en tendencia</label>
+                <label>Proponer nueva categoría o subcategoría (opcional)</label>
+                <input type="text" name="proposedCategoryName" placeholder="Ej. Planes para bajar de peso" />
+                <input type="text" name="proposedCategoryDescription" placeholder="Descripción breve de la categoría propuesta" />
+                <button type="submit">Enviar para aprobación</button>
+              </form>
+
+              <form id="form-text" class="panel">
+                <label>Título (opcional)</label>
+                <input type="text" name="title" placeholder="Mi nota" />
+                <label>Texto</label>
+                <textarea name="text" rows="6" required placeholder="Escribe o pega cualquier texto..."></textarea>
+                <div class="manager-email-field">
+                  <label>Correo para avisarte cuando se apruebe</label>
+                  <input type="email" name="email" placeholder="correo@ejemplo.com" required />
+                </div>
+                <label>Categoría inicial (opcional)</label>
+                <select name="categoryId" class="category-select"></select>
+                <label>Plataforma o marca (opcional)</label>
+                <select name="platformId" class="platform-select"></select>
+                <label>URL del trailer (opcional, TikTok/Facebook/YouTube)</label>
+                <input type="url" name="trailerUrl" placeholder="https://www.youtube.com/watch?v=..." />
+                <label class="checkbox-row"><input type="checkbox" name="isTrending" /> Marcar como contenido en tendencia</label>
+                <label>Proponer nueva categoría o subcategoría (opcional)</label>
+                <input type="text" name="proposedCategoryName" placeholder="Ej. Programación fitness" />
+                <input type="text" name="proposedCategoryDescription" placeholder="Descripción breve de la categoría propuesta" />
+                <button type="submit">Enviar para aprobación</button>
+              </form>
+
+              <div id="upload-status" class="status"></div>
+            </section>
+          </section>
+
+          <section class="module-view" data-view="intelligence">
+            <section class="card">
+              <h3>Búsqueda semántica y alternativas</h3>
+              <p class="hint">Encuentra contenido relacionado, respuestas similares y material útil para ofrecer alternativas.</p>
+              <form id="form-search">
+                <input type="text" name="query" placeholder="¿Qué quieres recordar o recomendar?" required />
+                <button type="submit">Buscar</button>
+              </form>
+              <div id="results"></div>
+            </section>
+          </section>
+
+          <section class="module-view" data-view="commercial">
+            <div class="module-subnav">
+              <button type="button" class="module-subnav-link active" data-view="commercial" data-subview="intro">Resumen</button>
+              <button type="button" class="module-subnav-link" data-view="commercial" data-subview="catalog">Catálogo</button>
+            </div>
+
+            <section class="card module-section active" data-subview-section="intro">
+              <h3>Catálogo comercial</h3>
+              <p class="hint">Espacio dedicado a vender contenido, ofrecer opciones y filtrar alternativas por plataforma, categoría o tendencia.</p>
+              <div id="commercial-locked" class="notice-card">
+                Este módulo solo está disponible para vendedores activos asignados a una empresa.
+              </div>
+            </section>
+
+            <section class="card seller-only module-section" id="seller-library-section" data-subview-section="catalog" hidden>
+              <h3>Biblioteca comercial para vendedores</h3>
+              <form id="form-library">
+                <input type="text" name="query" placeholder="Busca una película, serie o tema..." />
+                <select name="categoryId" id="library-category" class="category-select"></select>
+                <select name="platformId" id="library-platform" class="platform-select"></select>
+                <label class="checkbox-row"><input type="checkbox" name="trending" /> Solo tendencia</label>
+                <button type="submit">Explorar</button>
+              </form>
+              <div id="library-results"></div>
+            </section>
+          </section>
+
+          <section class="module-view" data-view="operations">
+            <section class="card admin-only" id="admin-section" hidden>
+              <h3>Operación y moderación</h3>
+              <div class="docs-controls">
+                <input type="text" id="docs-filter" placeholder="Filtrar por nombre, categoría o tipo..." />
+                <select id="docs-status">
+                  <option value="all">Todos</option>
+                  <option value="pending">Pendientes</option>
+                  <option value="published">Publicados</option>
+                </select>
+                <button id="refresh-docs" class="ghost">Actualizar</button>
+              </div>
+              <p class="docs-summary" id="docs-summary"></p>
+              <ul id="docs"></ul>
+            </section>
+          </section>
+
+          <section class="module-view" data-view="taxonomy">
+            <div class="module-subnav">
+              <button type="button" class="module-subnav-link active" data-view="taxonomy" data-subview="categories">Categorías</button>
+              <button type="button" class="module-subnav-link" data-view="taxonomy" data-subview="platforms">Plataformas</button>
+            </div>
+
+            <section class="card admin-only module-section active" id="categories-section" data-subview-section="categories" hidden>
+              <h3>Categorías jerárquicas</h3>
+              <p class="hint">Crea ramas y subramas ilimitadas. Ejemplo: Películas &gt; Romántica &gt; Romance asiático.</p>
+              <p class="hint compact">Las propuestas hechas por usuarios quedan pendientes hasta que un administrador las apruebe o reubique el contenido en otra rama.</p>
+              <form id="category-form" class="category-form">
+                <input type="hidden" id="category-id" />
+                <label>Nombre</label>
+                <input type="text" id="category-name" placeholder="Ej. Películas" required />
+                <label>Descripción (opcional)</label>
+                <input type="text" id="category-description" placeholder="Qué contiene esta rama" />
+                <label>Categoría padre</label>
+                <select id="category-parent"></select>
+                <div class="category-form-actions">
+                  <button type="submit" id="category-submit">Crear categoría</button>
+                  <button type="button" id="category-cancel" class="ghost" hidden>Cancelar</button>
+                </div>
+              </form>
+              <ul id="category-list" class="category-list"></ul>
+            </section>
+
+            <section class="card admin-only module-section" id="platforms-section" data-subview-section="platforms" hidden>
+              <h3>Plataformas y marcas</h3>
+              <p class="hint">Administra marcas como Netflix, Prime Video, Amazon o Movistar TV para filtrar el catálogo comercial.</p>
+              <form id="platform-form" class="category-form">
+                <input type="hidden" id="platform-id" />
+                <label>Nombre</label>
+                <input type="text" id="platform-name" placeholder="Ej. Netflix" required />
+                <label>Descripción (opcional)</label>
+                <input type="text" id="platform-description" placeholder="Qué representa esta plataforma" />
+                <div class="category-form-actions">
+                  <button type="submit" id="platform-submit">Crear plataforma</button>
+                  <button type="button" id="platform-cancel" class="ghost" hidden>Cancelar</button>
+                </div>
+              </form>
+              <ul id="platform-list" class="category-list"></ul>
+            </section>
+          </section>
+
+          <section class="module-view" data-view="access">
+            <div class="module-subnav">
+              <button type="button" class="module-subnav-link active" data-view="access" data-subview="companies">Empresas</button>
+              <button type="button" class="module-subnav-link" data-view="access" data-subview="profiles">Perfiles</button>
+            </div>
+
+            <section class="card admin-only module-section active" id="companies-section" data-subview-section="companies" hidden>
+              <h3>Empresas</h3>
+              <p class="hint">Crea la empresa y luego asigna los perfiles vendedor que podrán entrar al módulo comercial.</p>
+              <form id="company-form" class="category-form">
+                <input type="hidden" id="company-id" />
+                <label>Nombre de la empresa</label>
+                <input type="text" id="company-name" placeholder="Ej. Distribuidora Andina" required />
+                <label>Descripción (opcional)</label>
+                <input type="text" id="company-description" placeholder="Equipo o cliente al que pertenece el vendedor" />
+                <div class="category-form-actions">
+                  <button type="submit" id="company-submit">Crear empresa</button>
+                  <button type="button" id="company-cancel" class="ghost" hidden>Cancelar</button>
+                </div>
+              </form>
+              <ul id="company-list" class="category-list"></ul>
+            </section>
+
+            <section class="card admin-only module-section" id="sellers-section" data-subview-section="profiles" hidden>
+              <h3>Perfiles de acceso</h3>
+              <p class="hint">Crea vendedores y gestores de contenido. El vendedor debe pertenecer a una empresa; el gestor puede pertenecer a una empresa o quedar solo bajo administración.</p>
+              <form id="seller-form" class="category-form">
+                <input type="hidden" id="seller-id" />
+                <label>Rol</label>
+                <select id="seller-role" required>
+                  <option value="vendedor">Vendedor</option>
+                  <option value="gestor_de_contenido">Gestor de contenido</option>
+                </select>
+                <label>Nombre visible</label>
+                <input type="text" id="seller-full-name" placeholder="Ej. Karla Rojas" required />
+                <label>Usuario</label>
+                <input type="text" id="seller-username" placeholder="Ej. karla.rojas" required />
+                <label>Correo del perfil</label>
+                <input type="email" id="seller-email" placeholder="correo@empresa.com" />
+                <label>Contraseña <span class="hint compact">(deja en blanco al editar para no cambiarla)</span></label>
+                <input type="password" id="seller-password" placeholder="Contraseña de acceso" />
+                <label>Empresa <span class="hint compact">(opcional para gestor)</span></label>
+                <select id="seller-company"></select>
+                <label class="checkbox-row"><input type="checkbox" id="seller-active" checked /> Perfil activo</label>
+                <div class="category-form-actions">
+                  <button type="submit" id="seller-submit">Crear perfil</button>
+                  <button type="button" id="seller-cancel" class="ghost" hidden>Cancelar</button>
+                </div>
+              </form>
+              <ul id="seller-list" class="category-list"></ul>
+            </section>
+          </section>
+
+          <section class="module-view" data-view="api">
+            <div class="module-subnav">
+              <button type="button" class="module-subnav-link active" data-view="api" data-subview="summary">Resumen</button>
+              <button type="button" class="module-subnav-link" data-view="api" data-subview="auth">Autenticación</button>
+              <button type="button" class="module-subnav-link" data-view="api" data-subview="examples">Ejemplos</button>
+              <button type="button" class="module-subnav-link" data-view="api" data-subview="groups">Endpoints</button>
+            </div>
+
+            <section class="card module-section active" data-subview-section="summary">
+              <h3>Documentación para desarrolladores</h3>
+              <p class="hint">Esta sección explica cómo consumir las APIs del sistema para integraciones externas, paneles propios o automatizaciones.</p>
+              <div id="api-docs-summary" class="info-grid"></div>
+            </section>
+
+            <section class="dual-grid module-section" data-subview-section="auth">
+              <section class="card">
+                <h3>Autenticación y alcance</h3>
+                <div id="api-docs-auth" class="info-grid"></div>
+              </section>
+            </section>
+
+            <section class="card module-section" data-subview-section="examples">
+              <section>
+                <h3>Ejemplos rápidos</h3>
+                <div id="api-docs-examples" class="example-list"></div>
+              </section>
+            </section>
+
+            <section class="card module-section" data-subview-section="groups">
+              <h3>Módulos de API</h3>
+              <div id="api-docs-groups" class="api-groups"></div>
+            </section>
+          </section>
+        </main>
+      </div>
+    </div>
+
+    <div id="login-modal" class="modal" hidden>
+      <div class="modal-card">
+        <h3>Acceso de administrador</h3>
+        <form id="login-form">
+          <label>Usuario</label>
+          <input type="text" name="username" required autocomplete="username" />
+          <label>Contraseña</label>
+          <input type="password" name="password" required autocomplete="current-password" />
+          <div class="modal-actions">
+            <button type="button" id="login-cancel" class="ghost">Cancelar</button>
+            <button type="submit">Entrar</button>
+          </div>
+          <p id="login-error" class="status err"></p>
+        </form>
+      </div>
+    </div>
+
+    <div id="seller-login-modal" class="modal" hidden>
+      <div class="modal-card">
+        <h3>Acceso vendedor</h3>
+        <form id="seller-login-form">
+          <label>Usuario</label>
+          <input type="text" name="username" required autocomplete="username" />
+          <label>Contraseña</label>
+          <input type="password" name="password" required autocomplete="current-password" />
+          <div class="modal-actions">
+            <button type="button" id="seller-login-cancel" class="ghost">Cancelar</button>
+            <button type="submit">Entrar</button>
+          </div>
+          <p id="seller-login-error" class="status err"></p>
+        </form>
+      </div>
+    </div>
+
+    <div id="content-manager-login-modal" class="modal" hidden>
+      <div class="modal-card">
+        <h3>Acceso gestor de contenido</h3>
+        <form id="content-manager-login-form">
+          <label>Usuario</label>
+          <input type="text" name="username" required autocomplete="username" />
+          <label>Contraseña</label>
+          <input type="password" name="password" required autocomplete="current-password" />
+          <div class="modal-actions">
+            <button type="button" id="content-manager-login-cancel" class="ghost">Cancelar</button>
+            <button type="submit">Entrar</button>
+          </div>
+          <p id="content-manager-login-error" class="status err"></p>
+        </form>
+      </div>
+    </div>
+
+    <script async src="https://www.tiktok.com/embed.js"></script>
+    <script src="/app.js"></script>
+  </body>
 </html>
