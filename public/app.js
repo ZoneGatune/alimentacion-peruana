@@ -2,6 +2,23 @@ const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => Array.from(document.querySelectorAll(selector));
 const status = $('#upload-status');
 
+const emptyInternalSession = () => ({
+  authenticated: false,
+  username: null,
+  fullName: null,
+  displayName: null,
+  role: null,
+  roleLabel: null,
+  email: null,
+  company: null,
+  access: {
+    admin: false,
+    seller: false,
+    contentManager: false,
+  },
+});
+
+let currentSession = emptyInternalSession();
 let adminSession = { authenticated: false, username: null };
 let sellerSession = { authenticated: false, username: null, fullName: null, role: null, company: null };
 let contentManagerSession = { authenticated: false, username: null, fullName: null, email: null, role: null, company: null };
@@ -10,8 +27,12 @@ let allCategories = [];
 let allPlatforms = [];
 let allCompanies = [];
 let allSellers = [];
+let allInboxMessages = [];
 let apiCatalog = null;
 let currentView = 'dashboard';
+let videoPreviewTimer = null;
+let lastVideoPreviewEmbed = '';
+let tiktokScriptPromise = null;
 const currentSubViews = {
   dashboard: 'overview',
   commercial: 'intro',
@@ -22,8 +43,8 @@ const currentSubViews = {
 
 const viewMeta = {
   dashboard: {
-    title: 'Resumen ejecutivo',
-    description: 'Vista general del sistema, accesos y módulos disponibles.',
+    title: 'Home del sistema',
+    description: 'Pantalla inicial del SPA con ingreso compacto y módulos disponibles según tu acceso.',
   },
   intake: {
     title: 'Captura de contenido',
@@ -32,6 +53,10 @@ const viewMeta = {
   intelligence: {
     title: 'Búsqueda inteligente',
     description: 'Consulta semántica para descubrir contenido y ofrecer alternativas.',
+  },
+  inbox: {
+    title: 'Buzón interno',
+    description: 'Avisos internos cuando una película o contenido enviado queda aprobado.',
   },
   commercial: {
     title: 'Catálogo comercial',
@@ -54,6 +79,72 @@ const viewMeta = {
     description: 'Guía para desarrolladores que integran el sistema vía endpoints.',
   },
 };
+
+function applySessionState(sessionData) {
+  const defaults = emptyInternalSession();
+  currentSession = {
+    ...defaults,
+    ...sessionData,
+    company: sessionData?.company || null,
+    access: {
+      ...defaults.access,
+      ...(sessionData?.access || {}),
+    },
+  };
+
+  adminSession = currentSession.authenticated && currentSession.access.admin
+    ? { authenticated: true, username: currentSession.username }
+    : { authenticated: false, username: null };
+
+  sellerSession = currentSession.authenticated && currentSession.access.seller
+    ? {
+      authenticated: true,
+      username: currentSession.username,
+      fullName: currentSession.fullName,
+      role: currentSession.role,
+      company: currentSession.company,
+    }
+    : { authenticated: false, username: null, fullName: null, role: null, company: null };
+
+  contentManagerSession = currentSession.authenticated && currentSession.access.contentManager
+    ? {
+      authenticated: true,
+      username: currentSession.username,
+      fullName: currentSession.fullName,
+      email: currentSession.email,
+      role: currentSession.role,
+      company: currentSession.company,
+    }
+    : { authenticated: false, username: null, fullName: null, email: null, role: null, company: null };
+}
+
+function currentSessionSummary() {
+  if (!currentSession.authenticated) return 'Sin sesión interna';
+  const details = [currentSession.roleLabel || currentSession.role, currentSession.displayName || currentSession.username]
+    .filter(Boolean)
+    .join(' · ');
+  return details || 'Sesión activa';
+}
+
+function currentSessionModules() {
+  if (!currentSession.authenticated) {
+    return 'Captura pública, búsqueda inteligente y documentación API.';
+  }
+  const modules = ['home SPA'];
+  if (currentSession.access.admin || currentSession.email) modules.push('buzón interno');
+  if (currentSession.access.contentManager) modules.push('captura asistida');
+  if (currentSession.access.seller) modules.push('catálogo comercial');
+  if (currentSession.access.admin) modules.push('operaciones, taxonomías y accesos');
+  return modules.join(', ');
+}
+
+function canUseInbox() {
+  return !!currentSession.authenticated && (!!currentSession.access.admin || !!currentSession.email);
+}
+
+function openSessionLoginModal() {
+  $('#session-login-modal').hidden = false;
+}
 
 function setStatus(message, ok) {
   status.textContent = message;
@@ -98,12 +189,130 @@ function renderLinks(url) {
 }
 
 function triggerTikTokEmbeds() {
-  if (window.tiktokEmbedLoadContainers) window.tiktokEmbedLoadContainers();
+  const loadContainers = () => {
+    if (window.tiktokEmbedLoadContainers) window.tiktokEmbedLoadContainers();
+  };
+  if (window.tiktokEmbedLoadContainers) {
+    loadContainers();
+    return;
+  }
+  if (!tiktokScriptPromise) {
+    tiktokScriptPromise = new Promise((resolve) => {
+      const existing = document.querySelector('script[src="https://www.tiktok.com/embed.js"]');
+      if (existing) {
+        existing.addEventListener('load', () => resolve(), { once: true });
+        setTimeout(resolve, 1500);
+        return;
+      }
+      const script = document.createElement('script');
+      script.async = true;
+      script.src = 'https://www.tiktok.com/embed.js';
+      script.onload = () => resolve();
+      script.onerror = () => resolve();
+      document.body.appendChild(script);
+    });
+  }
+  tiktokScriptPromise.then(loadContainers);
+}
+
+function detectVideoProviderFromUrl(url) {
+  const value = String(url || '').toLowerCase();
+  if (!value) return null;
+  if (value.includes('tiktok.com')) return 'tiktok';
+  if (value.includes('facebook.com') || value.includes('fb.watch')) return 'facebook';
+  if (value.includes('youtube.com') || value.includes('youtu.be')) return 'youtube';
+  return null;
 }
 
 function renderVideoEmbed(item) {
   const embed = item.trailer_embed_html || (item.source_type === 'video' ? item.embed_html : '');
-  return embed ? `<div class="video-embed">${embed}</div>` : '';
+  if (!embed) return '';
+  const url = item.originalUrl || item.original_url || item.trailerUrl || item.trailer_url || '';
+  const provider = item.provider || detectVideoProviderFromUrl(url);
+  if (provider === 'tiktok') {
+    return renderTikTokPreviewCard({
+      title: item.external_title || item.source_name || item.title,
+      description: item.external_description || item.description,
+      originalUrl: url,
+      thumbnailUrl: item.thumbnailUrl || item.thumbnail_url,
+      embedHtml: embed,
+      buttonLabel: 'Reproducir dentro del sistema',
+    });
+  }
+  return `<div class="video-embed">${embed}</div>`;
+}
+
+function renderRawVideoEmbed(embedHtml) {
+  return embedHtml ? `<div class="video-embed">${embedHtml}</div>` : '';
+}
+
+function renderTikTokBlockquote(video) {
+  if (!video.originalUrl) {
+    return video.thumbnailUrl
+      ? `<img src="${escapeAttr(video.thumbnailUrl)}" alt="${escapeAttr(video.title || 'Vista previa TikTok')}" />`
+      : '<div class="tiktok-preview-placeholder">TikTok</div>';
+  }
+  return `
+    <blockquote class="tiktok-embed" cite="${escapeAttr(video.originalUrl)}" data-video-id="">
+      <section>
+        <a href="${escapeAttr(video.originalUrl)}" target="_blank" rel="noopener noreferrer">${escapeHtml(video.title || 'Ver video en TikTok')}</a>
+      </section>
+    </blockquote>
+  `;
+}
+
+function renderTikTokPreviewCard(video) {
+  const media = renderTikTokBlockquote(video);
+  const description = video.description ? `<p>${escapeHtml(video.description)}</p>` : '';
+  const url = video.originalUrl
+    ? `<a href="${escapeAttr(video.originalUrl)}" target="_blank" rel="noopener noreferrer">Abrir en TikTok</a>`
+    : '';
+  return `
+    <div class="tiktok-preview-card">
+      <div class="tiktok-preview-media">${media}</div>
+      <div class="tiktok-preview-copy">
+        <strong>${escapeHtml(video.title || 'Video de TikTok')}</strong>
+        ${description}
+        <div class="tiktok-preview-actions">
+          <button
+            type="button"
+            class="small video-modal-trigger"
+            data-video-modal-button="true"
+            data-video-title="${escapeAttr(video.title || 'Video de TikTok')}"
+            data-embed-html="${escapeAttr(encodeURIComponent(video.embedHtml || ''))}"
+          >${escapeHtml(video.buttonLabel || 'Ver dentro del sistema')}</button>
+          ${url}
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function renderVideoPreview(video) {
+  if (video.provider === 'tiktok') return renderTikTokPreviewCard(video);
+  return renderRawVideoEmbed(video.embedHtml || '');
+}
+
+function openVideoPlayerModal(embedHtml, title = 'Vista del video') {
+  const modal = $('#video-player-modal');
+  const titleBox = $('#video-player-title');
+  const body = $('#video-player-body');
+  if (!modal || !titleBox || !body) return;
+  titleBox.textContent = title;
+  body.innerHTML = renderRawVideoEmbed(embedHtml || '');
+  modal.hidden = false;
+  triggerTikTokEmbeds();
+}
+
+function bindVideoModalTriggers(root = document) {
+  root.querySelectorAll('[data-video-modal-button="true"]').forEach((button) => {
+    button.onclick = () => {
+      openVideoPlayerModal(
+        decodeURIComponent(button.dataset.embedHtml || ''),
+        button.dataset.videoTitle || 'Vista del video',
+      );
+    };
+  });
 }
 
 async function parseJsonResponse(response) {
@@ -139,32 +348,47 @@ function activateSubView(view, subview) {
 }
 
 function updateNavigationVisibility() {
+  const inboxEnabled = canUseInbox();
   const sellerEnabled = !!sellerSession.authenticated;
   const adminEnabled = !!adminSession.authenticated;
 
+  $$('.inbox-nav').forEach((item) => { item.hidden = !inboxEnabled; });
   $$('.seller-nav').forEach((item) => { item.hidden = !sellerEnabled; });
   $$('.admin-nav').forEach((item) => { item.hidden = !adminEnabled; });
 
-  if ((currentView === 'commercial' && !sellerEnabled) || ((currentView === 'operations' || currentView === 'taxonomy' || currentView === 'access') && !adminEnabled)) {
+  if (
+    (currentView === 'inbox' && !inboxEnabled)
+    || (currentView === 'commercial' && !sellerEnabled)
+    || ((currentView === 'operations' || currentView === 'taxonomy' || currentView === 'access') && !adminEnabled)
+  ) {
     setCurrentView('dashboard');
   }
 }
 
 function renderDashboard() {
   const stats = $('#dashboard-stats');
+  const highlights = $('#dashboard-highlights');
   const sessionBox = $('#dashboard-session');
   const modulesBox = $('#dashboard-modules');
   const apiPreview = $('#dashboard-api-preview');
-  if (!stats || !sessionBox || !modulesBox || !apiPreview) return;
+  if (!stats || !highlights || !sessionBox || !modulesBox || !apiPreview) return;
 
   const publishedCount = allDocs.filter((doc) => doc.published).length;
   const pendingCount = allDocs.filter((doc) => !doc.published).length;
-  const sellerCompany = sellerSession.company?.name || 'Sin empresa';
+  const unreadInboxCount = allInboxMessages.filter((message) => !message.read_at).length;
+  const sessionCompany = currentSession.company?.name || null;
+  const sessionContact = currentSession.email || null;
+  const sessionDetail = currentSession.authenticated
+    ? [currentSession.roleLabel || currentSession.role, currentSession.displayName || currentSession.username, sessionCompany || sessionContact]
+      .filter(Boolean)
+      .join(' · ')
+    : 'Ingresa con tu usuario y el sistema detectará automáticamente tu acceso.';
 
   stats.innerHTML = [
-    { label: 'Categorías', value: allCategories.length, detail: 'Ramas activas para clasificar y vender contenido.' },
-    { label: 'Plataformas', value: allPlatforms.length, detail: 'Marcas disponibles para filtrar el catálogo.' },
+    { label: 'Categorías', value: allCategories.length, detail: 'Ramas activas para clasificar, buscar y vender contenido.' },
+    { label: 'Plataformas', value: allPlatforms.length, detail: 'Marcas disponibles para filtrar el catálogo comercial.' },
     { label: 'Pendientes', value: pendingCount, detail: 'Contenido esperando moderación.' },
+    { label: 'Buzón', value: unreadInboxCount, detail: canUseInbox() ? 'Avisos internos sin leer.' : 'Disponible para usuarios con buzón.' },
     { label: 'APIs', value: apiCatalog?.endpointCount || 0, detail: 'Endpoints documentados para integraciones.' },
   ].map((item) => `
     <article class="metric-card">
@@ -174,26 +398,48 @@ function renderDashboard() {
     </article>
   `).join('');
 
+  highlights.innerHTML = [
+    {
+      label: 'Ingreso compacto',
+      detail: 'Un solo formulario para entrar al sistema sin pedirle a la persona que elija un perfil antes.',
+    },
+    {
+      label: 'Home inicial',
+      detail: 'La primera vista resume el SPA, los módulos y el estado general desde una sola pantalla.',
+    },
+    {
+      label: currentSession.authenticated ? 'Rol detectado' : 'Listo para entrar',
+      detail: currentSession.authenticated
+        ? `Tu acceso actual es ${currentSession.roleLabel || currentSession.role}.`
+        : 'Al ingresar verás aquí el acceso detectado y lo que puedes usar.',
+    },
+  ].map((item) => `
+    <article class="feature-card">
+      <div class="label">${escapeHtml(item.label)}</div>
+      <div class="detail">${escapeHtml(item.detail)}</div>
+    </article>
+  `).join('');
+
   sessionBox.innerHTML = [
     {
-      label: 'Administrador',
-      detail: adminSession.authenticated ? `Conectado como ${adminSession.username}` : 'Sin sesión administrativa.',
+      label: 'Sesión detectada',
+      detail: sessionDetail,
     },
     {
-      label: 'Vendedor',
-      detail: sellerSession.authenticated
-        ? `${sellerSession.fullName || sellerSession.username} · ${sellerCompany}`
-        : 'Sin sesión comercial.',
+      label: 'Módulos habilitados',
+      detail: currentSessionModules(),
     },
     {
-      label: 'Gestor de contenido',
-      detail: contentManagerSession.authenticated
-        ? `${contentManagerSession.fullName || contentManagerSession.username} · ${contentManagerSession.email || 'Sin correo'}`
-        : 'Sin sesión de captura asistida.',
+      label: 'Empresa o contacto',
+      detail: sessionCompany || sessionContact || 'Se mostrará según el tipo de acceso detectado.',
     },
     {
-      label: 'Contenido publicado',
-      detail: adminSession.authenticated ? `${publishedCount} documentos visibles para venta o consulta.` : 'Disponible al entrar como administrador.',
+      label: 'Buzón interno',
+      detail: canUseInbox() ? `${unreadInboxCount} aviso(s) sin leer.` : 'Se habilita para usuarios internos con buzón asociado.',
+    },
+    {
+      label: 'Biblioteca publicada',
+      detail: publishedCount ? `${publishedCount} documentos visibles para venta o consulta.` : 'Todavía no hay contenido publicado.',
     },
   ].map((item) => `
     <article class="mini-card">
@@ -203,10 +449,17 @@ function renderDashboard() {
   `).join('');
 
   modulesBox.innerHTML = [
-    'Captura de contenido para abastecer la biblioteca.',
-    'Búsqueda semántica para encontrar alternativas y material relacionado.',
-    'Catálogo comercial exclusivo para vendedores.',
-    'Operación administrativa para publicar, categorizar y mejorar contenido.',
+    'Home SPA con landing inicial y resumen operativo.',
+    'Captura de contenido pública o asistida según el acceso detectado.',
+    canUseInbox()
+      ? 'Buzón interno activo para revisar aprobaciones y avisos.'
+      : 'Buzón interno disponible para usuarios autenticados con buzón asociado.',
+    sellerSession.authenticated
+      ? 'Catálogo comercial habilitado para tu usuario vendedor.'
+      : 'Catálogo comercial disponible cuando entra un vendedor.',
+    adminSession.authenticated
+      ? 'Operaciones, taxonomías y control de accesos habilitados para administración.'
+      : 'Operaciones, taxonomías y accesos visibles solo para administración.',
   ].map((detail, index) => `
     <article class="mini-card">
       <div class="label">Módulo ${index + 1}</div>
@@ -221,8 +474,8 @@ function renderDashboard() {
         <div class="detail">${escapeHtml(apiCatalog.basePath)} · ${escapeHtml(apiCatalog.description || '')}</div>
       </article>
       <article class="mini-card">
-        <div class="label">Módulos API</div>
-        <div class="detail">${escapeHtml(String(apiCatalog.groups?.length || 0))} grupos documentados para desarrolladores.</div>
+        <div class="label">Acceso interno</div>
+        <div class="detail">Un login unificado detecta el rol y habilita los módulos correctos.</div>
       </article>
     `
     : '<article class="mini-card"><div class="label">API</div><div class="detail">Cargando documentación técnica...</div></article>';
@@ -308,11 +561,13 @@ function categoryOptions(selectedValue = '') {
     .join('');
 }
 
-function platformOptions(selectedValue = '') {
-  const selected = String(selectedValue || '');
-  return ['<option value="">Sin plataforma</option>']
+function platformOptions(selectedValue = '', includeEmptyOption = true) {
+  const values = Array.isArray(selectedValue) ? selectedValue : [selectedValue];
+  const selected = new Set(values.map((value) => String(value || '')).filter(Boolean));
+  const options = includeEmptyOption ? [`<option value="" ${selected.size ? '' : 'selected'}>Sin plataforma</option>`] : [];
+  return options
     .concat(
-      allPlatforms.map((platform) => `<option value="${platform.id}" ${selected === String(platform.id) ? 'selected' : ''}>${escapeHtml(platform.name)}</option>`)
+      allPlatforms.map((platform) => `<option value="${platform.id}" ${selected.has(String(platform.id)) ? 'selected' : ''}>${escapeHtml(platform.name)}</option>`)
     )
     .join('');
 }
@@ -342,8 +597,10 @@ function populateCategorySelects() {
 
 function populatePlatformSelects() {
   $$('.platform-select').forEach((select) => {
-    const current = select.value;
-    select.innerHTML = platformOptions(current);
+    const current = select.multiple
+      ? Array.from(select.selectedOptions).map((option) => option.value)
+      : select.value;
+    select.innerHTML = platformOptions(current, !select.multiple);
   });
 }
 
@@ -434,10 +691,14 @@ async function loadSellers() {
 
 function collectFormJson(form, extra = {}) {
   const emailInput = form.querySelector('[name="email"]');
+  const platformSelect = form.querySelector('[name="platformId"]');
+  const platformIds = platformSelect
+    ? Array.from(platformSelect.selectedOptions).map((option) => option.value).filter(Boolean)
+    : [];
   return {
     email: emailInput ? emailInput.value : '',
     categoryId: form.categoryId.value,
-    platformId: form.platformId ? form.platformId.value : '',
+    platformIds,
     proposedCategoryName: form.proposedCategoryName ? form.proposedCategoryName.value : '',
     proposedCategoryDescription: form.proposedCategoryDescription ? form.proposedCategoryDescription.value : '',
     trailerUrl: form.trailerUrl ? form.trailerUrl.value : '',
@@ -446,15 +707,93 @@ function collectFormJson(form, extra = {}) {
   };
 }
 
+function getVideoFormFields() {
+  const form = $('#form-video');
+  if (!form) return null;
+  return {
+    form,
+    title: form.querySelector('[name="title"]'),
+    originalUrl: form.querySelector('[name="originalUrl"]'),
+    publishedAt: form.querySelector('[name="publishedAt"]'),
+    description: form.querySelector('[name="description"]'),
+    embedHtml: form.querySelector('[name="embedHtml"]'),
+  };
+}
+
+function resetVideoPreview(clearStatus = true) {
+  const fields = getVideoFormFields();
+  const box = $('#video-metadata-box');
+  const preview = $('#video-preview-embed');
+  const statusBox = $('#video-preview-status');
+  if (!fields || !box || !preview || !statusBox) return;
+  box.hidden = true;
+  preview.innerHTML = '';
+  fields.title.value = '';
+  fields.originalUrl.value = '';
+  fields.publishedAt.value = '';
+  fields.description.value = '';
+  if (clearStatus) {
+    statusBox.textContent = '';
+    statusBox.className = 'status';
+  }
+  lastVideoPreviewEmbed = '';
+}
+
+function applyVideoPreview(video) {
+  const fields = getVideoFormFields();
+  const box = $('#video-metadata-box');
+  const preview = $('#video-preview-embed');
+  const statusBox = $('#video-preview-status');
+  if (!fields || !box || !preview || !statusBox) return;
+  fields.title.value = video.title || '';
+  fields.originalUrl.value = video.originalUrl || '';
+  fields.publishedAt.value = video.publishedAt || '';
+  fields.description.value = video.description || '';
+  preview.innerHTML = renderVideoPreview(video);
+  box.hidden = false;
+  statusBox.textContent = `Campos detectados automaticamente${video.provider ? ` · ${video.provider}` : ''}.`;
+  statusBox.className = 'status ok';
+  bindVideoModalTriggers(preview);
+  triggerTikTokEmbeds();
+}
+
+async function previewVideoEmbed(embedHtml) {
+  const statusBox = $('#video-preview-status');
+  if (!statusBox) return;
+  const normalized = (embedHtml || '').trim();
+  if (!normalized) {
+    resetVideoPreview();
+    return;
+  }
+  if (normalized === lastVideoPreviewEmbed) return;
+  statusBox.textContent = 'Leyendo metadata del embed...';
+  statusBox.className = 'status';
+  try {
+    const data = await parseJsonResponse(await fetch('/api/video/preview', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify({ embedHtml: normalized }),
+    }));
+    lastVideoPreviewEmbed = normalized;
+    applyVideoPreview(data.video || {});
+  } catch (error) {
+    resetVideoPreview(false);
+    statusBox.textContent = error.message;
+    statusBox.className = 'status err';
+  }
+}
+
 async function handle(promise, okMessage) {
   setStatus('Procesando...');
   try {
     const data = await parseJsonResponse(await promise);
     const note = data.published
       ? `${okMessage} y publicado (${data.chunks} fragmentos).`
-      : `${okMessage}. Pendiente de aprobación; avisaremos a ${data.submitterEmail} cuando se publique (${data.chunks} fragmentos).`;
+      : `${okMessage}. Pendiente de aprobación; el aviso quedará en el buzón interno asociado a ${data.submitterEmail} (${data.chunks} fragmentos).`;
     setStatus(note, true);
     if (adminSession.authenticated) await loadDocs();
+    if (canUseInbox()) await loadInbox();
     if (sellerSession.authenticated) await loadLibrary();
   } catch (error) {
     setStatus('Error: ' + error.message, false);
@@ -504,13 +843,41 @@ $('#form-text').addEventListener('submit', (event) => {
 
 $('#form-video').addEventListener('submit', (event) => {
   event.preventDefault();
+  const fields = getVideoFormFields();
+  if (!fields) return;
   handle(fetch('/api/video', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     credentials: 'include',
-    body: JSON.stringify(collectFormJson(event.target, { embedHtml: event.target.embedHtml.value })),
+    body: JSON.stringify(collectFormJson(event.target, {
+      embedHtml: fields.embedHtml.value,
+      title: fields.title.value,
+      originalUrl: fields.originalUrl.value,
+      publishedAt: fields.publishedAt.value,
+      description: fields.description.value,
+    })),
   }), 'Video recibido');
 });
+
+const videoFormFields = getVideoFormFields();
+if (videoFormFields?.embedHtml) {
+  videoFormFields.embedHtml.addEventListener('input', (event) => {
+    const value = event.target.value;
+    if (videoPreviewTimer) clearTimeout(videoPreviewTimer);
+    if (!value.trim()) {
+      resetVideoPreview();
+      return;
+    }
+    videoPreviewTimer = setTimeout(() => {
+      previewVideoEmbed(value);
+    }, 700);
+  });
+
+  videoFormFields.embedHtml.addEventListener('blur', (event) => {
+    if (videoPreviewTimer) clearTimeout(videoPreviewTimer);
+    previewVideoEmbed(event.target.value);
+  });
+}
 
 $('#form-search').addEventListener('submit', async (event) => {
   event.preventDefault();
@@ -543,6 +910,7 @@ $('#form-search').addEventListener('submit', async (event) => {
         ${renderVideoEmbed(item)}
       </div>
     `).join('');
+    bindVideoModalTriggers(box);
     triggerTikTokEmbeds();
   } catch (error) {
     box.innerHTML = `<p style="color:#b00020">${escapeHtml(error.message)}</p>`;
@@ -595,10 +963,91 @@ async function loadLibrary() {
         ${renderVideoEmbed(item)}
       </article>
     `).join('');
+    bindVideoModalTriggers(box);
     triggerTikTokEmbeds();
   } catch (error) {
     box.innerHTML = `<p style="color:#b00020">${escapeHtml(error.message)}</p>`;
   }
+}
+
+async function loadInbox() {
+  const list = $('#inbox-list');
+  const summary = $('#inbox-summary');
+  const locked = $('#inbox-locked');
+  if (!list || !summary || !locked) return;
+
+  if (!canUseInbox()) {
+    allInboxMessages = [];
+    renderInbox();
+    renderDashboard();
+    return;
+  }
+
+  const data = await parseJsonResponse(await fetch('/api/inbox', { credentials: 'include' }));
+  allInboxMessages = data.messages || [];
+  renderInbox();
+  renderDashboard();
+}
+
+function renderInbox() {
+  const list = $('#inbox-list');
+  const summary = $('#inbox-summary');
+  const locked = $('#inbox-locked');
+  if (!list || !summary || !locked) return;
+
+  if (!canUseInbox()) {
+    locked.hidden = false;
+    summary.textContent = '';
+    list.innerHTML = '';
+    return;
+  }
+
+  locked.hidden = true;
+  const unread = allInboxMessages.filter((message) => !message.read_at).length;
+  summary.textContent = adminSession.authenticated
+    ? `${allInboxMessages.length} aviso(s) en el sistema · ${unread} sin leer`
+    : `${allInboxMessages.length} aviso(s) en tu buzón · ${unread} sin leer`;
+
+  if (!allInboxMessages.length) {
+    list.innerHTML = '<li><em>Tu buzón todavía no tiene avisos.</em></li>';
+    return;
+  }
+
+  list.innerHTML = allInboxMessages.map((message) => `
+    <li class="category-item${message.read_at ? '' : ' unread'}">
+      <div class="category-item-row">
+        <div class="category-item-info">
+          <strong>${escapeHtml(message.title || 'Aviso')}</strong>
+          <div class="category-item-desc">
+            ${escapeHtml(formatDate(message.created_at))}
+            ${message.source_type ? ` · ${escapeHtml(message.source_type)}` : ''}
+            ${adminSession.authenticated ? ` · buzon: ${escapeHtml(message.recipient_email || '')}` : ''}
+          </div>
+          ${message.external_title && message.external_title !== message.source_name ? `<div class="category-item-desc">Título: ${escapeHtml(message.external_title)}</div>` : ''}
+          ${message.source_name ? `<div class="category-item-desc">Origen: ${escapeHtml(message.source_name)}</div>` : ''}
+          <div class="category-item-desc">${escapeHtml(message.message || '')}</div>
+        </div>
+        <div class="category-item-actions">
+          <span class="tag ${message.read_at ? 'tag-published' : 'tag-file'}">${message.read_at ? 'leído' : 'nuevo'}</span>
+          ${message.read_at ? '' : `<button class="small inbox-read" data-id="${message.id}">Marcar leído</button>`}
+        </div>
+      </div>
+    </li>
+  `).join('');
+
+  list.querySelectorAll('.inbox-read').forEach((button) => {
+    button.addEventListener('click', async () => {
+      try {
+        await parseJsonResponse(await fetch(`/api/inbox/${button.dataset.id}/read`, {
+          method: 'POST',
+          credentials: 'include',
+        }));
+        await loadInbox();
+      } catch (error) {
+        alert('Error: ' + error.message);
+      }
+    });
+  });
 }
 
 $('#form-library').addEventListener('submit', async (event) => {
@@ -607,26 +1056,11 @@ $('#form-library').addEventListener('submit', async (event) => {
 });
 
 async function refreshSessions() {
-  const [adminResponse, sellerResponse, contentManagerResponse] = await Promise.all([
-    fetch('/api/admin/me', { credentials: 'include' }),
-    fetch('/api/seller/me', { credentials: 'include' }),
-    fetch('/api/content-manager/me', { credentials: 'include' }),
-  ]);
+  const sessionResponse = await fetch('/api/session/me', { credentials: 'include' });
+  applySessionState(await sessionResponse.json());
 
-  adminSession = await adminResponse.json();
-  sellerSession = await sellerResponse.json();
-  contentManagerSession = await contentManagerResponse.json();
-
-  $('#auth-state').textContent = adminSession.authenticated ? `Admin: ${adminSession.username}` : '';
-  $('#auth-btn').textContent = adminSession.authenticated ? 'Cerrar sesión admin' : 'Acceso administrador';
-  $('#content-manager-auth-state').textContent = contentManagerSession.authenticated
-    ? `Gestor: ${contentManagerSession.fullName || contentManagerSession.username}`
-    : '';
-  $('#content-manager-auth-btn').textContent = contentManagerSession.authenticated ? 'Cerrar sesión gestor' : 'Acceso gestor';
-  $('#seller-auth-state').textContent = sellerSession.authenticated
-    ? `Vendedor: ${sellerSession.fullName || sellerSession.username} · ${sellerSession.company?.name || 'Sin empresa'}`
-    : '';
-  $('#seller-auth-btn').textContent = sellerSession.authenticated ? 'Cerrar sesión vendedor' : 'Acceso vendedor';
+  $('#session-auth-state').textContent = currentSessionSummary();
+  $('#session-auth-btn').textContent = currentSession.authenticated ? 'Cerrar sesión' : 'Ingresar';
 
   updateNavigationVisibility();
   syncCaptureEmailFields();
@@ -650,103 +1084,46 @@ async function refreshSessions() {
     renderSellerAdmin();
   }
 
+  await loadInbox();
   await loadLibrary();
   renderDashboard();
 }
 
-$('#auth-btn').addEventListener('click', async () => {
-  if (adminSession.authenticated) {
-    await fetch('/api/admin/logout', { method: 'POST', credentials: 'include' });
+$('#session-auth-btn').addEventListener('click', async () => {
+  if (currentSession.authenticated) {
+    await fetch('/api/session/logout', { method: 'POST', credentials: 'include' });
     await refreshSessions();
   } else {
-    $('#login-modal').hidden = false;
+    openSessionLoginModal();
   }
 });
 
-$('#content-manager-auth-btn').addEventListener('click', async () => {
-  if (contentManagerSession.authenticated) {
-    await fetch('/api/content-manager/logout', { method: 'POST', credentials: 'include' });
-    await refreshSessions();
-  } else {
-    $('#content-manager-login-modal').hidden = false;
-  }
+$('#session-login-cancel').addEventListener('click', () => {
+  $('#session-login-modal').hidden = true;
+  $('#session-login-error').textContent = '';
 });
 
-$('#seller-auth-btn').addEventListener('click', async () => {
-  if (sellerSession.authenticated) {
-    await fetch('/api/seller/logout', { method: 'POST', credentials: 'include' });
-    await refreshSessions();
-  } else {
-    $('#seller-login-modal').hidden = false;
-  }
+$('#video-player-close').addEventListener('click', () => {
+  $('#video-player-modal').hidden = true;
+  $('#video-player-body').innerHTML = '';
 });
 
-$('#login-cancel').addEventListener('click', () => {
-  $('#login-modal').hidden = true;
-  $('#login-error').textContent = '';
-});
-
-$('#content-manager-login-cancel').addEventListener('click', () => {
-  $('#content-manager-login-modal').hidden = true;
-  $('#content-manager-login-error').textContent = '';
-});
-
-$('#seller-login-cancel').addEventListener('click', () => {
-  $('#seller-login-modal').hidden = true;
-  $('#seller-login-error').textContent = '';
-});
-
-$('#login-form').addEventListener('submit', async (event) => {
+$('#session-login-form').addEventListener('submit', async (event) => {
   event.preventDefault();
   try {
-    await parseJsonResponse(await fetch('/api/admin/login', {
+    const data = await parseJsonResponse(await fetch('/api/session/login', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       credentials: 'include',
       body: JSON.stringify({ username: event.target.username.value, password: event.target.password.value }),
     }));
-    $('#login-modal').hidden = true;
-    $('#login-error').textContent = '';
+    applySessionState(data.session);
+    $('#session-login-modal').hidden = true;
+    $('#session-login-error').textContent = '';
     event.target.reset();
     await refreshSessions();
   } catch (error) {
-    $('#login-error').textContent = error.message;
-  }
-});
-
-$('#seller-login-form').addEventListener('submit', async (event) => {
-  event.preventDefault();
-  try {
-    await parseJsonResponse(await fetch('/api/seller/login', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      credentials: 'include',
-      body: JSON.stringify({ username: event.target.username.value, password: event.target.password.value }),
-    }));
-    $('#seller-login-modal').hidden = true;
-    $('#seller-login-error').textContent = '';
-    event.target.reset();
-    await refreshSessions();
-  } catch (error) {
-    $('#seller-login-error').textContent = error.message;
-  }
-});
-
-$('#content-manager-login-form').addEventListener('submit', async (event) => {
-  event.preventDefault();
-  try {
-    await parseJsonResponse(await fetch('/api/content-manager/login', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      credentials: 'include',
-      body: JSON.stringify({ username: event.target.username.value, password: event.target.password.value }),
-    }));
-    $('#content-manager-login-modal').hidden = true;
-    $('#content-manager-login-error').textContent = '';
-    event.target.reset();
-    await refreshSessions();
-  } catch (error) {
-    $('#content-manager-login-error').textContent = error.message;
+    $('#session-login-error').textContent = error.message;
   }
 });
 
@@ -776,19 +1153,19 @@ function docMatchesFilter(doc, filter) {
 
 function renderDocMeta(doc) {
   const parts = [`${doc.chunks} fragmento(s)`, formatDate(doc.created_at)];
-  if (doc.submitter_email) parts.push(`correo: ${doc.submitter_email}`);
+  if (doc.submitter_email) parts.push(`buzón: ${doc.submitter_email}`);
   if (doc.is_trending) parts.push('tendencia');
   if (doc.approval_notified_at) {
-    parts.push(`aviso enviado: ${formatDate(doc.approval_notified_at)}`);
+    parts.push(`aviso en buzón: ${formatDate(doc.approval_notified_at)}`);
   } else if (doc.submitter_email && doc.published) {
-    parts.push('aviso pendiente o sin SMTP');
+    parts.push('aviso de buzón pendiente');
   }
   return parts.join(' · ');
 }
 
 function renderDocumentFields(doc) {
   const items = [
-    doc.submitter_email ? `<div><strong>Correo:</strong> ${escapeHtml(doc.submitter_email)}</div>` : '',
+    doc.submitter_email ? `<div><strong>Buzón asociado:</strong> ${escapeHtml(doc.submitter_email)}</div>` : '',
     doc.external_title ? `<div><strong>Título externo:</strong> ${escapeHtml(doc.external_title)}</div>` : '',
     doc.external_description ? `<div><strong>Descripción:</strong> ${escapeHtml(doc.external_description)}</div>` : '',
     doc.external_published_at ? `<div><strong>Fecha fuente:</strong> ${escapeHtml(formatDate(doc.external_published_at))}</div>` : '',
@@ -956,10 +1333,11 @@ function renderDocs() {
           method: 'POST',
           credentials: 'include',
         }));
-        if (data.notification && !data.notification.sent && data.notification.reason) {
-          alert('Documento publicado, pero el aviso por correo no se envió: ' + data.notification.reason);
+        if (data.notification && !data.notification.created && data.notification.reason) {
+          alert('Documento publicado, pero no se pudo registrar aviso en el buzón: ' + data.notification.reason);
         }
         await loadDocs();
+        await loadInbox();
         await loadLibrary();
       } catch (error) {
         alert('Error: ' + error.message);
@@ -1016,6 +1394,7 @@ async function toggleView(button) {
     const saveCategories = div.querySelector('.save-doc-categories');
     const savePlatforms = div.querySelector('.save-doc-platforms');
     const saveLibrary = div.querySelector('.save-doc-library');
+    bindVideoModalTriggers(div);
     if (saveCategories) saveCategories.addEventListener('click', () => saveDocumentCategories(saveCategories));
     if (savePlatforms) savePlatforms.addEventListener('click', () => saveDocumentPlatforms(savePlatforms));
     if (saveLibrary) saveLibrary.addEventListener('click', () => saveDocumentLibraryMetadata(saveLibrary));
@@ -1448,6 +1827,8 @@ $$('.module-subnav-link').forEach((button) => {
 $$('.go-view').forEach((button) => {
   button.addEventListener('click', () => setCurrentView(button.dataset.goView));
 });
+
+$('#hero-login-btn').addEventListener('click', openSessionLoginModal);
 
 setCurrentView('dashboard');
 syncSellerRoleFields();

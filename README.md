@@ -17,8 +17,6 @@ Aplicacion web con backend en Python para operar una biblioteca multimedia como 
 - `SESSION_SECRET`: secreto para las sesiones web
 - `ADMIN_USERNAME` y `ADMIN_PASSWORD`: necesarios si quieres poder entrar al panel de administrador
 - `PORT`: opcional, por defecto `5000`
-- `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD`, `SMTP_FROM_EMAIL`: opcionales, para avisar por correo cuando un contenido se aprueba
-- `SMTP_USE_TLS`: opcional, por defecto `true`
 
 ## Instalacion
 
@@ -33,10 +31,10 @@ Si existe un archivo `.env` en la raiz del proyecto, `app.py` lo carga automatic
 
 ## Flujo de contenido
 
-- Cada aporte pide un correo del remitente y queda guardado para avisarle cuando se apruebe.
+- Cada aporte pide un correo del remitente y queda guardado para vincular su buzón interno.
 - Se aceptan archivos (`pdf`, `docx`, `txt`, `md`, imagenes), paginas web, notas libres y videos publicos de TikTok/Facebook/YouTube.
 - Los videos sociales y trailers guardan titulo, descripcion, URL original, fecha publicada y embed para mostrarlos despues.
-- Al publicar desde el panel admin, la app intenta enviar un aviso por correo si SMTP esta configurado. Si no lo esta, el contenido se publica igual y el panel lo indica.
+- Al publicar desde el panel admin, la app deja un aviso dentro del buzón interno asociado al remitente.
 - Las categorias son un arbol editable: puedes crear ramas y subramas ilimitadas, por ejemplo `Peliculas > Romantica > Romance asiatico`.
 - Las personas que suben contenido tambien pueden proponer categorias o subcategorias nuevas; esas propuestas quedan pendientes hasta que un administrador las apruebe.
 - Cada documento puede asociarse a una o varias categorias y esas asociaciones se pueden editar desde el panel admin.
@@ -45,16 +43,18 @@ Si existe un archivo `.env` en la raiz del proyecto, `app.py` lo carga automatic
 - La biblioteca comercial ya no es publica: solo entra un perfil con rol `vendedor`.
 - El administrador crea primero la empresa y luego asigna perfiles vendedor a esa empresa.
 - Existe un rol adicional `gestor_de_contenido`, que puede pertenecer a una empresa o existir solo bajo administracion.
-- Cuando entra un gestor de contenido, la captura reutiliza su correo guardado y ya no lo pide en cada subida.
+- Cuando entra un gestor de contenido, la captura reutiliza el correo vinculado a su buzón y ya no lo pide en cada subida.
+- El SPA ahora incluye un módulo de **Buzón interno** para revisar aprobaciones pendientes y avisos de publicación.
+- Los accesos internos ahora entran por un solo formulario: la persona escribe su usuario y el sistema detecta si es admin, vendedor o gestor, sin mostrarle perfiles antes de entrar.
 - El modulo comercial queda separado del panel admin y permite filtrar por categoria, plataforma, tendencia y titulo para vender contenido de la biblioteca.
-- La interfaz ahora funciona como un SPA con menu lateral, modulos separados y submenus internos para navegar mejor cada bloque: resumen, captura, busqueda inteligente, catalogo comercial, operaciones, taxonomias, accesos y documentacion API.
+- La interfaz ahora funciona como un SPA con menu lateral, una pantalla inicial tipo home y modulos separados con submenus internos para navegar mejor cada bloque: inicio, captura, busqueda inteligente, catalogo comercial, operaciones, taxonomias, accesos y documentacion API.
 - Los desarrolladores tienen una seccion propia de documentacion tecnica dentro de la app, alimentada por `/api/docs`.
-- En la captura, **Video social** aparece primero y ahora trabaja con **embed HTML** en vez de link directo.
+- En la captura, **Video social** aparece primero, trabaja con **embed HTML** en vez de link directo y autocompleta titulo, descripcion, URL y fecha antes de guardar.
 
 ## Estructura
 
-- `app.py` - servidor Flask, API, inicializacion SQL, categorias jerarquicas, empresas, perfiles vendedor, plataformas, modulo comercial, ingestion, videos sociales, avisos de aprobacion y catalogo de endpoints
-- `public/` - SPA comercial con menu, modulos, submenus internos y documentacion visual de API
+- `app.py` - servidor Flask, API, inicializacion SQL, categorias jerarquicas, empresas, perfiles vendedor, plataformas, modulo comercial, ingestion, videos sociales, buzon interno de aprobaciones y catalogo de endpoints
+- `public/` - SPA comercial con menu, modulos, submenus internos, buzon y documentacion visual de API
 - `requirements.txt` - dependencias Python
 
 ## Base de datos
@@ -62,14 +62,14 @@ Si existe un archivo `.env` en la raiz del proyecto, `app.py` lo carga automatic
 Al iniciar, `app.py` crea la extension `vector` y las tablas `admins`, `documents` y `chunks` si no existen. La base debe permitir `CREATE EXTENSION vector`.
 
 La tabla `documents` tambien guarda:
-- correo del remitente
+- correo del remitente vinculado al buzón interno
 - URL original
 - titulo y descripcion externos
 - fecha publicada en la fuente
 - embed HTML del video
 - URL y embed HTML del trailer
 - indicador de tendencia
-- fecha en que se envio el aviso de aprobacion
+- fecha en que se dejó el aviso de aprobación en el buzón interno
 
 Ademas existen:
 - `categories`: nodos del arbol jerarquico con `parent_id`, estado de aprobacion y correo del proponente si vino de un envio publico
@@ -78,6 +78,7 @@ Ademas existen:
 - `seller_profiles`: perfiles con rol `vendedor` o `gestor_de_contenido`, usuario, correo, clave cifrada y empresa opcional
 - `platforms`: marcas o plataformas de streaming / distribucion
 - `document_platforms`: relacion muchos-a-muchos entre documentos y plataformas
+- `inbox_messages`: avisos internos que se generan cuando administracion aprueba y publica contenido
 
 ## API y documentacion
 

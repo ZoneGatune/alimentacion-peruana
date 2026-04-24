@@ -1,9 +1,7 @@
 import io
 import os
 import re
-import smtplib
 from datetime import datetime, timezone
-from email.message import EmailMessage
 from functools import wraps
 from urllib.parse import parse_qs, quote, unquote, urlparse
 
@@ -31,6 +29,7 @@ SIMILARITY_THRESHOLD = 0.55
 MAX_FILE_SIZE = 25 * 1024 * 1024
 USER_AGENT = "Mozilla/5.0 AlimentacionPeruanaBot/1.0"
 EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+AI_CLIENT_CLOSED_MARKER = "client has been closed"
 
 IMAGE_ANALYSIS_PROMPT = """Eres un curador experto de una base de conocimiento multimedia. Analiza esta imagen y extrae, en espanol, toda la informacion util para indexarla y poder recuperarla despues.
 Si es comida o nutricion, incluye nombre probable, ingredientes, calorias/macronutrientes aproximados y si ayuda o no a bajar de peso.
@@ -105,6 +104,21 @@ ALTER TABLE documents ADD COLUMN IF NOT EXISTS approval_notified_at TIMESTAMPTZ;
 ALTER TABLE documents ADD COLUMN IF NOT EXISTS trailer_url TEXT;
 ALTER TABLE documents ADD COLUMN IF NOT EXISTS trailer_embed_html TEXT;
 ALTER TABLE documents ADD COLUMN IF NOT EXISTS is_trending BOOLEAN NOT NULL DEFAULT FALSE;
+
+CREATE TABLE IF NOT EXISTS inbox_messages (
+    id BIGSERIAL PRIMARY KEY,
+    document_id BIGINT REFERENCES documents(id) ON DELETE SET NULL,
+    recipient_email TEXT NOT NULL,
+    notification_type TEXT NOT NULL DEFAULT 'approval',
+    title TEXT NOT NULL,
+    message TEXT NOT NULL,
+    read_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS inbox_messages_recipient_email_idx
+    ON inbox_messages (LOWER(recipient_email), created_at DESC);
+CREATE INDEX IF NOT EXISTS inbox_messages_read_at_idx ON inbox_messages(read_at);
 
 CREATE TABLE IF NOT EXISTS categories (
     id BIGSERIAL PRIMARY KEY,
@@ -206,6 +220,8 @@ app.config["SESSION_COOKIE_HTTPONLY"] = True
 app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
 app.config["SESSION_COOKIE_SECURE"] = os.getenv("NODE_ENV") == "production"
 
+_cached_ai_client: genai.Client | None = None
+
 
 def database_url() -> str:
     value = os.getenv("DATABASE_URL")
@@ -219,10 +235,37 @@ def db_connection():
 
 
 def ai_client() -> genai.Client:
+    global _cached_ai_client
     api_key = os.getenv("GEMINI_API_KEY")
     if not api_key:
         raise RuntimeError("GEMINI_API_KEY no configurada.")
-    return genai.Client(api_key=api_key)
+    if _cached_ai_client is None:
+        _cached_ai_client = genai.Client(api_key=api_key)
+    return _cached_ai_client
+
+
+def reset_ai_client() -> None:
+    global _cached_ai_client
+    client = _cached_ai_client
+    _cached_ai_client = None
+    if client and hasattr(client, "close"):
+        client.close()
+
+
+def run_ai_request(callback):
+    last_error = None
+    for _attempt in range(2):
+        client = ai_client()
+        try:
+            return callback(client)
+        except Exception as exc:  # noqa: BLE001
+            last_error = exc
+            if AI_CLIENT_CLOSED_MARKER not in str(exc).lower():
+                raise
+            reset_ai_client()
+    if last_error:
+        raise last_error
+    raise RuntimeError("No se pudo completar la solicitud de IA.")
 
 
 def request_headers() -> dict[str, str]:
@@ -318,7 +361,10 @@ def parse_category_ids(payload) -> list[int]:
 def parse_platform_ids(payload) -> list[int]:
     raw_ids = None
     if hasattr(payload, "get"):
-        raw_ids = payload.get("platformIds")
+        if hasattr(payload, "getlist"):
+            raw_ids = payload.getlist("platformIds") or payload.getlist("platformId")
+        if raw_ids in (None, []):
+            raw_ids = payload.get("platformIds")
         if raw_ids is None:
             raw_single = payload.get("platformId")
             raw_ids = [] if raw_single in (None, "") else [raw_single]
@@ -362,10 +408,12 @@ def chunk_text(text: str, size: int = 1200, overlap: int = 150) -> list[str]:
 
 
 def embed(text: str) -> list[float]:
-    result = ai_client().models.embed_content(
-        model=EMBED_MODEL,
-        contents=text,
-        config=types.EmbedContentConfig(output_dimensionality=768),
+    result = run_ai_request(
+        lambda client: client.models.embed_content(
+            model=EMBED_MODEL,
+            contents=text,
+            config=types.EmbedContentConfig(output_dimensionality=768),
+        )
     )
     values = None
     if getattr(result, "embeddings", None):
@@ -402,12 +450,14 @@ def extract_from_buffer(buffer: bytes, mimetype: str | None, original_name: str 
     if mimetype == "text/plain" or lower.endswith(".txt") or lower.endswith(".md"):
         return buffer.decode("utf-8", errors="replace")
     if mimetype and mimetype.startswith("image/"):
-        response = ai_client().models.generate_content(
-            model=VISION_MODEL,
-            contents=[
-                types.Part.from_bytes(data=buffer, mime_type=mimetype),
-                IMAGE_ANALYSIS_PROMPT,
-            ],
+        response = run_ai_request(
+            lambda client: client.models.generate_content(
+                model=VISION_MODEL,
+                contents=[
+                    types.Part.from_bytes(data=buffer, mime_type=mimetype),
+                    IMAGE_ANALYSIS_PROMPT,
+                ],
+            )
         )
         return response.text or ""
     raise RuntimeError(f"Tipo de archivo no soportado: {mimetype or lower}")
@@ -525,6 +575,31 @@ def build_facebook_embed(url: str) -> str:
     )
 
 
+def extract_tiktok_video_id(url: str) -> str | None:
+    parsed = urlparse(url)
+    host = parsed.netloc.lower()
+    if host.startswith("www."):
+        host = host[4:]
+    if "tiktok.com" not in host:
+        return None
+    parts = [part for part in parsed.path.split("/") if part]
+    for index, part in enumerate(parts):
+        if part == "video" and index + 1 < len(parts):
+            return parts[index + 1]
+    return None
+
+
+def build_tiktok_embed(url: str) -> str:
+    video_id = extract_tiktok_video_id(url)
+    if not video_id:
+        raise RuntimeError("No se pudo identificar el video de TikTok.")
+    return (
+        f'<iframe src="https://www.tiktok.com/player/v1/{quote(video_id, safe="")}?controls=1" '
+        'width="400" height="720" frameborder="0" allowfullscreen '
+        'allow="fullscreen" title="TikTok video"></iframe>'
+    )
+
+
 def extract_youtube_video_id(url: str) -> str | None:
     parsed = urlparse(url)
     host = parsed.netloc.lower()
@@ -550,6 +625,29 @@ def build_youtube_embed(url: str) -> str:
         'title="Trailer" width="560" height="315" frameborder="0" '
         'allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" '
         'referrerpolicy="strict-origin-when-cross-origin" allowfullscreen></iframe>'
+    )
+
+
+def build_video_index_text(
+    provider: str | None,
+    title: str,
+    description: str | None,
+    original_url: str,
+    published_at,
+    resolved_url: str | None = None,
+) -> str:
+    return "\n".join(
+        value
+        for value in [
+            "Video social indexado.",
+            f"Proveedor: {provider}." if provider else "",
+            f"Titulo: {title}",
+            f"Descripcion: {description}" if description else "",
+            f"URL original: {original_url}",
+            f"Fecha publicada: {published_at.isoformat()}" if published_at else "",
+            f"Fuente resuelta: {resolved_url}" if resolved_url else "",
+        ]
+        if value
     )
 
 
@@ -579,8 +677,9 @@ def extract_video_submission(url: str) -> dict:
 
     if provider == "tiktok":
         oembed = fetch_tiktok_oembed(url)
-        embed_html = oembed.get("html")
+        embed_html = build_tiktok_embed(url)
         title = oembed.get("title") or title
+        description = oembed.get("author_name") or description
     elif provider == "facebook":
         embed_html = build_facebook_embed(url)
     elif provider == "youtube":
@@ -589,29 +688,17 @@ def extract_video_submission(url: str) -> dict:
     if not embed_html:
         raise RuntimeError("No se pudo obtener un embed valido para este video.")
 
-    index_text = "\n".join(
-        value
-        for value in [
-            "Video social indexado.",
-            f"Proveedor: {provider}.",
-            f"Titulo: {title}",
-            f"Descripcion: {description}" if description else "",
-            f"URL original: {url}",
-            f"Fecha publicada: {published_at.isoformat()}" if published_at else "",
-            f"Fuente resuelta: {response.url}",
-        ]
-        if value
-    )
-
     return {
+        "provider": provider,
         "source_type": "video",
         "source_name": title,
-        "text": index_text,
+        "text": build_video_index_text(provider, title, description, url, published_at, response.url),
         "original_url": url,
         "external_title": title,
         "external_description": description,
         "external_published_at": published_at,
         "embed_html": embed_html,
+        "thumbnail_url": oembed.get("thumbnail_url") if provider == "tiktok" else None,
     }
 
 
@@ -621,9 +708,44 @@ def extract_video_submission_from_embed(embed_html: str) -> dict:
     url = extract_video_url_from_embed(embed_html)
     video = extract_video_submission(url)
     provided_embed = sanitize_video_embed_html(embed_html)
-    if provided_embed:
+    if provided_embed and video.get("provider") != "tiktok":
         video["embed_html"] = provided_embed
     return video
+
+
+def apply_video_metadata_overrides(video: dict, payload) -> dict:
+    title = normalize_optional_text(payload.get("title")) or video["external_title"] or video["source_name"]
+    description = normalize_optional_text(payload.get("description")) or video["external_description"]
+    original_url = normalize_optional_text(payload.get("originalUrl")) or video["original_url"]
+    published_at_input = normalize_optional_text(payload.get("publishedAt"))
+    published_at = parse_external_datetime(published_at_input) if published_at_input else video["external_published_at"]
+    provider = detect_video_provider(original_url) or video.get("provider")
+    source_name = title
+
+    return {
+        **video,
+        "provider": provider,
+        "source_name": source_name,
+        "text": build_video_index_text(provider, source_name, description, original_url, published_at),
+        "original_url": original_url,
+        "external_title": title,
+        "external_description": description,
+        "external_published_at": published_at,
+    }
+
+
+def serialize_video_metadata(video: dict) -> dict:
+    return {
+        "provider": video.get("provider"),
+        "sourceType": video.get("source_type"),
+        "sourceName": video.get("source_name"),
+        "originalUrl": video.get("original_url"),
+        "title": video.get("external_title"),
+        "description": video.get("external_description"),
+        "publishedAt": video.get("external_published_at").isoformat() if video.get("external_published_at") else None,
+        "embedHtml": video.get("embed_html"),
+        "thumbnailUrl": video.get("thumbnail_url"),
+    }
 
 
 def extract_from_url(url: str) -> tuple[str, str]:
@@ -1175,10 +1297,14 @@ def ask_gemini_about_topic(query: str) -> str:
     prompt = FALLBACK_PROMPT_TEMPLATE.format(query=query)
     models = [TEXT_MODEL, "gemini-2.0-flash", "gemini-flash-latest"]
     last_error = None
-    client = ai_client()
     for model in models:
         try:
-            response = client.models.generate_content(model=model, contents=prompt)
+            response = run_ai_request(
+                lambda client, selected_model=model: client.models.generate_content(
+                    model=selected_model,
+                    contents=prompt,
+                )
+            )
             if response.text:
                 return response.text
         except Exception as exc:  # noqa: BLE001
@@ -1294,63 +1420,55 @@ def profile_role_label(role: str) -> str:
     return "gestor de contenido" if role == "gestor_de_contenido" else role
 
 
-def smtp_configured() -> bool:
-    return bool(os.getenv("SMTP_HOST") and (os.getenv("SMTP_FROM_EMAIL") or os.getenv("SMTP_USERNAME")))
-
-
-def send_approval_notification(document: dict) -> dict:
-    email = document.get("submitter_email")
-    if not email:
-        return {"attempted": False, "sent": False, "reason": "Documento sin correo de contacto."}
-    if not smtp_configured():
+def create_approval_inbox_message(conn, document: dict) -> dict:
+    recipient_email = clean_optional_email(document.get("submitter_email"))
+    if not recipient_email:
+        return {"attempted": False, "created": False, "reason": "Documento sin buzon asociado."}
+    if document.get("approval_notified_at"):
         return {
             "attempted": False,
-            "sent": False,
-            "reason": "SMTP no configurado. El documento se publico, pero no se envio aviso por correo.",
+            "created": False,
+            "recipient": recipient_email,
+            "reason": "El buzon ya habia sido avisado para este contenido.",
         }
 
-    host = os.getenv("SMTP_HOST")
-    port = int(os.getenv("SMTP_PORT", "587"))
-    use_tls = os.getenv("SMTP_USE_TLS", "true").lower() not in {"0", "false", "no"}
-    username = os.getenv("SMTP_USERNAME")
-    password = os.getenv("SMTP_PASSWORD")
-    from_email = os.getenv("SMTP_FROM_EMAIL") or username
-
-    message = EmailMessage()
-    message["Subject"] = "Tu contenido fue aprobado"
-    message["From"] = from_email
-    message["To"] = email
-
-    title = document.get("external_title") or document.get("source_name")
-    source_type = document.get("source_type")
+    title = document.get("external_title") or document.get("source_name") or "Contenido"
+    source_type = document.get("source_type") or "contenido"
     original_url = document.get("original_url")
-    body_lines = [
-        "Hola,",
-        "",
-        "Tu contenido fue aprobado en la base de conocimiento.",
-        f"Tipo: {source_type}",
-        f"Titulo: {title}",
+    message_parts = [
+        f"Tu {source_type} fue aprobado y ya esta disponible en la biblioteca.",
+        f"Titulo: {title}.",
     ]
     if original_url:
-        body_lines.append(f"URL original: {original_url}")
-    body_lines += [
-        "",
-        "Gracias por tu aporte.",
-    ]
-    message.set_content("\n".join(body_lines))
+        message_parts.append(f"Referencia original: {original_url}.")
+    message = " ".join(message_parts)
 
-    try:
-        with smtplib.SMTP(host, port, timeout=20) as server:
-            server.ehlo()
-            if use_tls:
-                server.starttls()
-                server.ehlo()
-            if username and password:
-                server.login(username, password)
-            server.send_message(message)
-        return {"attempted": True, "sent": True}
-    except Exception as exc:  # noqa: BLE001
-        return {"attempted": True, "sent": False, "reason": str(exc)}
+    inbox_message = conn.execute(
+        """
+        INSERT INTO inbox_messages (
+            document_id,
+            recipient_email,
+            notification_type,
+            title,
+            message
+        )
+        VALUES (%s, %s, 'approval', %s, %s)
+        RETURNING id, created_at
+        """,
+        (document["id"], recipient_email, f"Aprobacion: {title}", message),
+    ).fetchone()
+
+    conn.execute(
+        "UPDATE documents SET approval_notified_at = %s WHERE id = %s",
+        (inbox_message["created_at"], document["id"]),
+    )
+    return {
+        "attempted": True,
+        "created": True,
+        "recipient": recipient_email,
+        "inboxMessageId": inbox_message["id"],
+        "notifiedAt": inbox_message["created_at"].isoformat(),
+    }
 
 
 def require_admin(view_func):
@@ -1458,6 +1576,171 @@ def clear_content_manager_session() -> None:
         session.pop(key, None)
 
 
+def clear_internal_sessions() -> None:
+    clear_admin_session()
+    clear_seller_session()
+    clear_content_manager_session()
+
+
+def build_empty_session_payload() -> dict:
+    return {
+        "authenticated": False,
+        "username": None,
+        "fullName": None,
+        "displayName": None,
+        "role": None,
+        "roleLabel": None,
+        "email": None,
+        "company": None,
+        "access": {
+            "admin": False,
+            "seller": False,
+            "contentManager": False,
+        },
+    }
+
+
+def build_admin_session_payload(admin: dict) -> dict:
+    username = admin["username"]
+    return {
+        "authenticated": True,
+        "username": username,
+        "fullName": username,
+        "displayName": username,
+        "role": "admin",
+        "roleLabel": "administrador",
+        "email": None,
+        "company": None,
+        "access": {
+            "admin": True,
+            "seller": False,
+            "contentManager": False,
+        },
+    }
+
+
+def build_profile_session_payload(profile: dict) -> dict:
+    role = profile["role"]
+    company = None
+    if profile["company_id"]:
+        company = {
+            "id": profile["company_id"],
+            "name": profile["company_name"],
+        }
+    display_name = profile["full_name"] or profile["username"]
+    return {
+        "authenticated": True,
+        "id": profile["id"],
+        "username": profile["username"],
+        "fullName": profile["full_name"],
+        "displayName": display_name,
+        "role": role,
+        "roleLabel": profile_role_label(role),
+        "email": profile["email"],
+        "company": company,
+        "access": {
+            "admin": False,
+            "seller": role == "vendedor",
+            "contentManager": role == "gestor_de_contenido",
+        },
+    }
+
+
+def set_admin_session(admin: dict) -> None:
+    clear_internal_sessions()
+    session["admin_id"] = admin["id"]
+    session["admin_username"] = admin["username"]
+
+
+def set_profile_session(profile: dict) -> None:
+    clear_internal_sessions()
+    role = profile["role"]
+    if role == "vendedor":
+        session["seller_id"] = profile["id"]
+        session["seller_username"] = profile["username"]
+        session["seller_full_name"] = profile["full_name"]
+        session["seller_role"] = profile["role"]
+        session["seller_company_id"] = profile["company_id"]
+        session["seller_company_name"] = profile["company_name"]
+        return
+    if role == "gestor_de_contenido":
+        session["content_manager_id"] = profile["id"]
+        session["content_manager_username"] = profile["username"]
+        session["content_manager_full_name"] = profile["full_name"]
+        session["content_manager_email"] = profile["email"]
+        session["content_manager_role"] = profile["role"]
+        session["content_manager_company_id"] = profile["company_id"]
+        session["content_manager_company_name"] = profile["company_name"]
+        return
+    raise RuntimeError("Rol no valido.")
+
+
+def get_active_internal_session() -> dict:
+    admin_id = session.get("admin_id")
+    if admin_id:
+        with db_connection() as conn:
+            admin = conn.execute(
+                "SELECT id, username FROM admins WHERE id = %s",
+                (admin_id,),
+            ).fetchone()
+        if admin:
+            session["admin_username"] = admin["username"]
+            return build_admin_session_payload(admin)
+        clear_admin_session()
+
+    seller_id = session.get("seller_id")
+    if seller_id and session.get("seller_role") == "vendedor":
+        with db_connection() as conn:
+            seller = conn.execute(
+                """
+                SELECT
+                    sp.id,
+                    sp.username,
+                    sp.full_name,
+                    sp.email,
+                    sp.role,
+                    sp.active,
+                    sp.company_id,
+                    c.name AS company_name
+                FROM seller_profiles sp
+                LEFT JOIN companies c ON c.id = sp.company_id
+                WHERE sp.id = %s
+                """,
+                (seller_id,),
+            ).fetchone()
+        if seller and seller["active"] and seller["role"] == "vendedor":
+            set_profile_session(seller)
+            return build_profile_session_payload(seller)
+        clear_seller_session()
+
+    profile_id = session.get("content_manager_id")
+    if profile_id and session.get("content_manager_role") == "gestor_de_contenido":
+        with db_connection() as conn:
+            profile = conn.execute(
+                """
+                SELECT
+                    sp.id,
+                    sp.username,
+                    sp.full_name,
+                    sp.email,
+                    sp.role,
+                    sp.active,
+                    sp.company_id,
+                    c.name AS company_name
+                FROM seller_profiles sp
+                LEFT JOIN companies c ON c.id = sp.company_id
+                WHERE sp.id = %s
+                """,
+                (profile_id,),
+            ).fetchone()
+        if profile and profile["active"] and profile["role"] == "gestor_de_contenido":
+            set_profile_session(profile)
+            return build_profile_session_payload(profile)
+        clear_content_manager_session()
+
+    return build_empty_session_payload()
+
+
 @app.before_request
 def api_preflight():
     if request.path.startswith("/api") and request.method == "OPTIONS":
@@ -1487,6 +1770,160 @@ def payload_too_large(_error):
 @app.get("/")
 def index():
     return app.send_static_file("index.html")
+
+
+@app.post("/api/session/login")
+def session_login():
+    try:
+        data = request.get_json(silent=True) or {}
+        username = normalize_username(data.get("username"))
+        password = data.get("password")
+        if not username or not password:
+            return jsonify({"error": "Faltan datos."}), 400
+        if admin_seed_configured():
+            ensure_seed_admin()
+        with db_connection() as conn:
+            admin = conn.execute(
+                "SELECT * FROM admins WHERE LOWER(username) = LOWER(%s)",
+                (username,),
+            ).fetchone()
+            profile = conn.execute(
+                """
+                SELECT
+                    sp.*,
+                    c.name AS company_name
+                FROM seller_profiles sp
+                LEFT JOIN companies c ON c.id = sp.company_id
+                WHERE LOWER(sp.username) = LOWER(%s)
+                """,
+                (username,),
+            ).fetchone()
+        if admin and verify_admin_password(admin, password):
+            set_admin_session(admin)
+            return jsonify({"ok": True, "session": build_admin_session_payload(admin)})
+        if profile and profile["active"] and profile["role"] in {"vendedor", "gestor_de_contenido"} and verify_seller_password(profile, password):
+            set_profile_session(profile)
+            return jsonify({"ok": True, "session": build_profile_session_payload(profile)})
+        return jsonify({"error": "Credenciales invalidas."}), 401
+    except Exception as exc:  # noqa: BLE001
+        return jsonify({"error": str(exc)}), 500
+
+
+@app.post("/api/session/logout")
+def session_logout():
+    clear_internal_sessions()
+    return jsonify({"ok": True})
+
+
+@app.get("/api/session/me")
+def session_me():
+    return jsonify(get_active_internal_session())
+
+
+@app.get("/api/inbox")
+def list_inbox():
+    try:
+        current_session = get_active_internal_session()
+        if not current_session.get("authenticated"):
+            return jsonify({"error": "No autenticado."}), 401
+
+        is_admin = bool(current_session.get("access", {}).get("admin"))
+        recipient_email = clean_optional_email(current_session.get("email"))
+        if not is_admin and not recipient_email:
+            return jsonify({"messages": [], "unread": 0})
+
+        with db_connection() as conn:
+            if is_admin:
+                rows = conn.execute(
+                    """
+                    SELECT
+                        m.id,
+                        m.document_id,
+                        m.recipient_email,
+                        m.notification_type,
+                        m.title,
+                        m.message,
+                        m.read_at,
+                        m.created_at,
+                        d.source_name,
+                        d.external_title,
+                        d.source_type
+                    FROM inbox_messages m
+                    LEFT JOIN documents d ON d.id = m.document_id
+                    ORDER BY m.created_at DESC
+                    LIMIT 100
+                    """
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    """
+                    SELECT
+                        m.id,
+                        m.document_id,
+                        m.recipient_email,
+                        m.notification_type,
+                        m.title,
+                        m.message,
+                        m.read_at,
+                        m.created_at,
+                        d.source_name,
+                        d.external_title,
+                        d.source_type
+                    FROM inbox_messages m
+                    LEFT JOIN documents d ON d.id = m.document_id
+                    WHERE LOWER(m.recipient_email) = LOWER(%s)
+                    ORDER BY m.created_at DESC
+                    LIMIT 100
+                    """,
+                    (recipient_email,),
+                ).fetchall()
+
+        messages = [dict(row) for row in rows]
+        unread = sum(1 for message in messages if not message["read_at"])
+        return jsonify({"messages": messages, "unread": unread})
+    except Exception as exc:  # noqa: BLE001
+        return jsonify({"error": str(exc)}), 500
+
+
+@app.post("/api/inbox/<int:message_id>/read")
+def mark_inbox_message_read(message_id: int):
+    try:
+        current_session = get_active_internal_session()
+        if not current_session.get("authenticated"):
+            return jsonify({"error": "No autenticado."}), 401
+
+        is_admin = bool(current_session.get("access", {}).get("admin"))
+        recipient_email = clean_optional_email(current_session.get("email"))
+
+        with db_connection() as conn:
+            if is_admin:
+                message = conn.execute(
+                    """
+                    UPDATE inbox_messages
+                    SET read_at = COALESCE(read_at, NOW())
+                    WHERE id = %s
+                    RETURNING id, read_at
+                    """,
+                    (message_id,),
+                ).fetchone()
+            elif recipient_email:
+                message = conn.execute(
+                    """
+                    UPDATE inbox_messages
+                    SET read_at = COALESCE(read_at, NOW())
+                    WHERE id = %s AND LOWER(recipient_email) = LOWER(%s)
+                    RETURNING id, read_at
+                    """,
+                    (message_id, recipient_email),
+                ).fetchone()
+            else:
+                return jsonify({"error": "Este usuario no tiene buzon disponible."}), 403
+
+        if not message:
+            return jsonify({"error": "No encontrado."}), 404
+        return jsonify({"ok": True, "message": dict(message)})
+    except Exception as exc:  # noqa: BLE001
+        return jsonify({"error": str(exc)}), 500
 
 
 @app.post("/api/admin/login")
@@ -1522,8 +1959,7 @@ def admin_login():
         valid = verify_admin_password(admin, password)
         if not valid:
             return jsonify({"error": "Credenciales invalidas."}), 401
-        session["admin_id"] = admin["id"]
-        session["admin_username"] = admin["username"]
+        set_admin_session(admin)
         return jsonify({"ok": True, "username": admin["username"]})
     except Exception as exc:  # noqa: BLE001
         return jsonify({"error": str(exc)}), 500
@@ -1566,13 +2002,7 @@ def seller_login():
             return jsonify({"error": "Credenciales invalidas."}), 401
         if not verify_seller_password(seller, password):
             return jsonify({"error": "Credenciales invalidas."}), 401
-        clear_seller_session()
-        session["seller_id"] = seller["id"]
-        session["seller_username"] = seller["username"]
-        session["seller_full_name"] = seller["full_name"]
-        session["seller_role"] = seller["role"]
-        session["seller_company_id"] = seller["company_id"]
-        session["seller_company_name"] = seller["company_name"]
+        set_profile_session(seller)
         return jsonify(
             {
                 "ok": True,
@@ -1661,14 +2091,7 @@ def content_manager_login():
             return jsonify({"error": "Credenciales invalidas."}), 401
         if not verify_seller_password(profile, password):
             return jsonify({"error": "Credenciales invalidas."}), 401
-        clear_content_manager_session()
-        session["content_manager_id"] = profile["id"]
-        session["content_manager_username"] = profile["username"]
-        session["content_manager_full_name"] = profile["full_name"]
-        session["content_manager_email"] = profile["email"]
-        session["content_manager_role"] = profile["role"]
-        session["content_manager_company_id"] = profile["company_id"]
-        session["content_manager_company_name"] = profile["company_name"]
+        set_profile_session(profile)
         return jsonify(
             {
                 "ok": True,
@@ -2242,7 +2665,7 @@ def create_from_video():
             platform_ids = parse_platform_ids(data)
             ensure_platform_ids_exist(conn, platform_ids)
         is_trending = parse_bool(data.get("isTrending"))
-        video = extract_video_submission_from_embed(embed_html)
+        video = apply_video_metadata_overrides(extract_video_submission_from_embed(embed_html), data)
         return jsonify(
             ingest(
                 video["source_type"],
@@ -2261,6 +2684,23 @@ def create_from_video():
                 is_trending=is_trending,
             )
         )
+    except RuntimeError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except Exception as exc:  # noqa: BLE001
+        return jsonify({"error": str(exc)}), 500
+
+
+@app.post("/api/video/preview")
+def preview_video_from_embed():
+    try:
+        data = request.get_json(silent=True) or {}
+        embed_html = normalize_optional_text(data.get("embedHtml") or data.get("embed"))
+        if not embed_html:
+            return jsonify({"error": "Falta el embed del video."}), 400
+        video = apply_video_metadata_overrides(extract_video_submission_from_embed(embed_html), data)
+        return jsonify({"ok": True, "video": serialize_video_metadata(video)})
+    except RuntimeError as exc:
+        return jsonify({"error": str(exc)}), 400
     except Exception as exc:  # noqa: BLE001
         return jsonify({"error": str(exc)}), 500
 
@@ -2534,18 +2974,10 @@ def publish_document(document_id: int):
                 """,
                 (document_id,),
             ).fetchone()
+            if document:
+                notification = create_approval_inbox_message(conn, dict(document))
         if not document:
             return jsonify({"error": "No encontrado."}), 404
-
-        notification = send_approval_notification(document)
-        if notification.get("sent"):
-            notified_at = datetime.now(timezone.utc)
-            with db_connection() as conn:
-                conn.execute(
-                    "UPDATE documents SET approval_notified_at = %s WHERE id = %s",
-                    (notified_at, document_id),
-                )
-            notification["notifiedAt"] = notified_at.isoformat()
         return jsonify({"ok": True, "notification": notification})
     except Exception as exc:  # noqa: BLE001
         return jsonify({"error": str(exc)}), 500
@@ -2594,7 +3026,27 @@ def build_api_catalog() -> dict:
                 {"method": "POST", "path": "/api/upload", "access": "publico", "description": "Carga archivo para aprobacion.", "contentType": "multipart/form-data"},
                 {"method": "POST", "path": "/api/url", "access": "publico", "description": "Captura una pagina o URL de video.", "body": {"url": "https://ejemplo.com", "email": "autor@ejemplo.com", "categoryId": 1}},
                 {"method": "POST", "path": "/api/text", "access": "publico", "description": "Guarda una nota libre.", "body": {"title": "Mi nota", "text": "Contenido", "email": "autor@ejemplo.com"}},
-                {"method": "POST", "path": "/api/video", "access": "publico", "description": "Registra video social a partir del embed HTML.", "body": {"embedHtml": "<iframe src=\"https://www.youtube.com/embed/demo\"></iframe>", "email": "autor@ejemplo.com"}},
+                {"method": "POST", "path": "/api/video/preview", "access": "publico", "description": "Resuelve metadata del embed para autocompletar campos antes de guardar.", "body": {"embedHtml": "<iframe src=\"https://www.youtube.com/embed/demo\"></iframe>"}},
+                {"method": "POST", "path": "/api/video", "access": "publico", "description": "Registra video social a partir del embed HTML y guarda titulo, descripcion, URL y fecha por separado.", "body": {"embedHtml": "<iframe src=\"https://www.youtube.com/embed/demo\"></iframe>", "title": "Titulo detectado", "originalUrl": "https://www.youtube.com/watch?v=demo", "publishedAt": "2026-04-23T20:00:00+00:00", "description": "Descripcion detectada", "email": "autor@ejemplo.com"}},
+            ],
+        },
+        {
+            "id": "internal-session",
+            "title": "Acceso interno unificado",
+            "description": "Un solo login para cualquier usuario interno; el backend detecta el rol y habilita el espacio correcto.",
+            "endpoints": [
+                {"method": "POST", "path": "/api/session/login", "access": "interno", "description": "Inicia sesion interna y detecta si el usuario es admin, vendedor o gestor.", "body": {"username": "karla.rojas", "password": "******"}},
+                {"method": "POST", "path": "/api/session/logout", "access": "interno", "description": "Cierra la sesion interna activa."},
+                {"method": "GET", "path": "/api/session/me", "access": "interno", "description": "Devuelve la sesion interna actual, el rol detectado y los modulos habilitados."},
+            ],
+        },
+        {
+            "id": "internal-inbox",
+            "title": "Buzon interno",
+            "description": "Avisos internos cuando un contenido queda aprobado y publicado.",
+            "endpoints": [
+                {"method": "GET", "path": "/api/inbox", "access": "interno", "description": "Lista el buzon del usuario autenticado; administracion puede ver todos los avisos."},
+                {"method": "POST", "path": "/api/inbox/:id/read", "access": "interno", "description": "Marca un aviso del buzon como leido."},
             ],
         },
         {
@@ -2611,7 +3063,7 @@ def build_api_catalog() -> dict:
         {
             "id": "content-manager-module",
             "title": "Gestor de contenido",
-            "description": "API para gestores que capturan material sin repetir correo en cada carga.",
+            "description": "API para gestores que capturan material sin repetir el correo vinculado a su buzon.",
             "endpoints": [
                 {"method": "POST", "path": "/api/content-manager/login", "access": "gestor", "description": "Inicia sesion gestor de contenido.", "body": {"username": "gestor.demo", "password": "******"}},
                 {"method": "POST", "path": "/api/content-manager/logout", "access": "gestor", "description": "Cierra sesion del gestor."},
@@ -2638,7 +3090,7 @@ def build_api_catalog() -> dict:
                 {"method": "PUT", "path": "/api/documents/:id/categories", "access": "admin", "description": "Reasignar categorias.", "body": {"categoryIds": [1, 2]}},
                 {"method": "PUT", "path": "/api/documents/:id/platforms", "access": "admin", "description": "Reasignar plataformas.", "body": {"platformIds": [1, 3]}},
                 {"method": "PATCH", "path": "/api/documents/:id/library-metadata", "access": "admin", "description": "Actualizar tendencia y trailer.", "body": {"isTrending": True, "trailerUrl": "https://www.youtube.com/watch?v=demo"}},
-                {"method": "POST", "path": "/api/documents/:id/publish", "access": "admin", "description": "Publicar e intentar aviso por correo."},
+                {"method": "POST", "path": "/api/documents/:id/publish", "access": "admin", "description": "Publicar y dejar aviso en el buzon interno asociado."},
                 {"method": "POST", "path": "/api/documents/:id/unpublish", "access": "admin", "description": "Despublicar documento."},
                 {"method": "DELETE", "path": "/api/documents/:id", "access": "admin", "description": "Eliminar documento."},
             ],
@@ -2680,14 +3132,16 @@ def build_api_catalog() -> dict:
         "basePath": "/api",
         "authentication": [
             {"role": "publico", "mode": "sin autenticacion", "notes": "Consulta publica y envio de contenido para aprobacion."},
+            {"role": "interno", "mode": "cookie de sesion", "notes": "Acceso compacto mediante /api/session/login; la respuesta indica el rol detectado."},
             {"role": "vendedor", "mode": "cookie de sesion", "notes": "Acceso al modulo comercial mediante /api/seller/login."},
-            {"role": "gestor", "mode": "cookie de sesion", "notes": "Captura asistida mediante /api/content-manager/login, reutilizando el correo del perfil."},
+            {"role": "gestor", "mode": "cookie de sesion", "notes": "Captura asistida mediante /api/content-manager/login, reutilizando el correo vinculado al buzon del perfil."},
             {"role": "admin", "mode": "cookie de sesion", "notes": "Operacion y mantenimiento del sistema mediante /api/admin/login."},
         ],
         "examples": [
             {"title": "Buscar contenido", "language": "bash", "code": 'curl "http://127.0.0.1:5000/api/search?q=netflix&k=5"'},
-            {"title": "Login vendedor", "language": "javascript", "code": "await fetch('/api/seller/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include', body: JSON.stringify({ username: 'karla.rojas', password: '******' }) });"},
-            {"title": "Login gestor de contenido", "language": "javascript", "code": "await fetch('/api/content-manager/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include', body: JSON.stringify({ username: 'gestor.demo', password: '******' }) });"},
+            {"title": "Login interno unificado", "language": "javascript", "code": "await fetch('/api/session/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include', body: JSON.stringify({ username: 'karla.rojas', password: '******' }) });"},
+            {"title": "Leer sesion detectada", "language": "javascript", "code": "await fetch('/api/session/me', { credentials: 'include' }).then((response) => response.json());"},
+            {"title": "Consultar buzon", "language": "javascript", "code": "await fetch('/api/inbox', { credentials: 'include' }).then((response) => response.json());"},
             {"title": "Explorar biblioteca comercial", "language": "javascript", "code": "await fetch('/api/library?platform_id=1&trending=true', { credentials: 'include' });"},
         ],
         "groups": groups,

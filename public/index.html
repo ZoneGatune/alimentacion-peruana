@@ -12,13 +12,13 @@
         <div class="brand-block">
           <div class="brand-kicker">Sistema comercial</div>
           <h1>Biblioteca Multimedia</h1>
-          <p>SPA para captar contenido, vender biblioteca, gestionar vendedores y exponer APIs.</p>
+          <p>Home SPA para entrar con un solo usuario, operar contenido y abrir los módulos según el acceso detectado.</p>
         </div>
 
         <nav class="side-nav" aria-label="Módulos">
           <button class="nav-link active" data-view="dashboard">
-            <span>Resumen ejecutivo</span>
-            <small>Estado del sistema</small>
+            <span>Home</span>
+            <small>Landing y accesos</small>
           </button>
           <button class="nav-link" data-view="intake">
             <span>Captura de contenido</span>
@@ -27,6 +27,10 @@
           <button class="nav-link" data-view="intelligence">
             <span>Búsqueda inteligente</span>
             <small>Consulta semántica</small>
+          </button>
+          <button class="nav-link inbox-nav" data-view="inbox" hidden>
+            <span>Buzón interno</span>
+            <small>Avisos de aprobación</small>
           </button>
           <button class="nav-link seller-nav" data-view="commercial" hidden>
             <span>Catálogo comercial</span>
@@ -51,8 +55,8 @@
         </nav>
 
         <div class="sidebar-note">
-          <strong>Modelo comercial</strong>
-          <p>Administra empresas, asigna vendedores y ofrece alternativas del catálogo desde un módulo separado.</p>
+          <strong>Acceso unificado</strong>
+          <p>La persona entra una sola vez con su usuario; el sistema detecta si es administrador, vendedor o gestor de contenido.</p>
         </div>
       </aside>
 
@@ -60,52 +64,51 @@
         <header class="topbar">
           <div>
             <p class="topbar-kicker">Plataforma comercial</p>
-            <h2 id="current-view-name">Resumen ejecutivo</h2>
-            <p id="current-view-description" class="topbar-description">Vista general del sistema, accesos y módulos disponibles.</p>
+            <h2 id="current-view-name">Home del sistema</h2>
+            <p id="current-view-description" class="topbar-description">Pantalla inicial del SPA con ingreso compacto y módulos disponibles según tu acceso.</p>
           </div>
           <div class="auth-bar">
-            <span id="content-manager-auth-state"></span>
-            <button id="content-manager-auth-btn" class="ghost">Acceso gestor</button>
-            <span id="seller-auth-state"></span>
-            <button id="seller-auth-btn" class="ghost">Acceso vendedor</button>
-            <span id="auth-state"></span>
-            <button id="auth-btn" class="ghost">Acceso administrador</button>
+            <span id="session-auth-state" class="auth-pill">Sin sesión interna</span>
+            <button id="session-auth-btn" class="ghost">Ingresar</button>
           </div>
         </header>
 
         <main class="workspace-body">
           <section class="module-view active" data-view="dashboard">
             <div class="module-subnav">
-              <button type="button" class="module-subnav-link active" data-view="dashboard" data-subview="overview">Vista general</button>
-              <button type="button" class="module-subnav-link" data-view="dashboard" data-subview="sessions">Sesiones</button>
-              <button type="button" class="module-subnav-link" data-view="dashboard" data-subview="system">Sistema y APIs</button>
+              <button type="button" class="module-subnav-link active" data-view="dashboard" data-subview="overview">Inicio</button>
+              <button type="button" class="module-subnav-link" data-view="dashboard" data-subview="sessions">Tu acceso</button>
+              <button type="button" class="module-subnav-link" data-view="dashboard" data-subview="system">SPA y APIs</button>
             </div>
 
             <section class="hero-card module-section active" data-subview-section="overview">
               <div>
-                <p class="hero-kicker">SPA modular</p>
-                <h3>Opera, vende y documenta desde un mismo sistema</h3>
+                <p class="hero-kicker">Home SPA</p>
+                <h3>Ingresa con tu usuario y el sistema abre tu espacio de trabajo</h3>
                 <p>
-                  Esta interfaz organiza el producto en módulos: captura, búsqueda semántica, catálogo comercial para vendedores,
-                  operación administrativa y documentación de API para integraciones externas.
+                  La primera vista ahora funciona como landing interna: muestra el estado general, resume los módulos del SPA
+                  y detecta automáticamente si tu acceso corresponde a administración, ventas o captura de contenido.
                 </p>
               </div>
               <div class="hero-actions">
+                <button type="button" id="hero-login-btn">Ingresar ahora</button>
                 <button type="button" class="go-view" data-go-view="intake">Capturar contenido</button>
                 <button type="button" class="ghost go-view" data-go-view="api">Ver APIs</button>
               </div>
             </section>
 
             <section class="summary-grid module-section active" id="dashboard-stats" data-subview-section="overview"></section>
+            <section class="landing-grid module-section active" id="dashboard-highlights" data-subview-section="overview"></section>
 
             <section class="card module-section" data-subview-section="sessions">
               <h3>Acceso actual</h3>
+              <p class="hint">No necesitas escoger perfil. Entra con tu usuario y aquí verás el acceso detectado y los módulos habilitados.</p>
               <div id="dashboard-session" class="info-grid"></div>
             </section>
 
             <section class="dual-grid module-section" data-subview-section="system">
               <section class="card">
-                <h3>Módulos del sistema</h3>
+                <h3>Módulos del SPA</h3>
                 <div id="dashboard-modules" class="info-grid"></div>
               </section>
               <section class="card">
@@ -120,7 +123,7 @@
               <h3>Captura y aportes</h3>
               <p class="hint">Recibe archivos, páginas, notas y videos. Cada aporte queda listo para revisión y publicación.</p>
               <div id="content-manager-note" class="notice-card" hidden>
-                Gestor autenticado: se usará tu correo guardado para las subidas y no tendrás que escribirlo en cada video.
+                Gestor autenticado: se usará tu buzón guardado para las subidas y no tendrás que escribirlo en cada video.
               </div>
               <div class="tabs">
                 <button class="tab active" data-tab="video">Video social</button>
@@ -133,14 +136,30 @@
                 <label>Embed del video de TikTok, Facebook o YouTube</label>
                 <textarea name="embedHtml" rows="6" placeholder='<iframe src="..."></iframe> o bloque embed completo' required></textarea>
                 <p class="hint compact">Pega el embed completo. El sistema resolverá la URL original, metadata y visualización reutilizable.</p>
+                <div id="video-preview-status" class="status"></div>
+                <div id="video-metadata-box" class="video-metadata-box" hidden>
+                  <label>Título detectado</label>
+                  <input type="text" name="title" placeholder="Se autocompleta desde el embed" />
+                  <label>URL original detectada</label>
+                  <input type="url" name="originalUrl" placeholder="https://..." />
+                  <label>Fecha detectada</label>
+                  <input type="text" name="publishedAt" placeholder="2026-04-23T20:00:00+00:00" />
+                  <label>Descripción detectada</label>
+                  <textarea name="description" rows="4" placeholder="Descripción del video"></textarea>
+                  <div>
+                    <div class="label-like">Vista previa del embed</div>
+                    <div id="video-preview-embed"></div>
+                  </div>
+                </div>
                 <div class="manager-email-field">
-                  <label>Correo para avisarte cuando se apruebe</label>
+                  <label>Correo vinculado a tu buzón interno</label>
                   <input type="email" name="email" placeholder="correo@ejemplo.com" required />
                 </div>
                 <label>Categoría inicial (opcional)</label>
                 <select name="categoryId" class="category-select"></select>
                 <label>Plataforma o marca (opcional)</label>
-                <select name="platformId" class="platform-select"></select>
+                <select name="platformId" class="platform-select multi-select" multiple size="4"></select>
+                <p class="hint compact">Puedes escoger varias opciones para enviar la aprobación con más de una plataforma o marca.</p>
                 <label class="checkbox-row"><input type="checkbox" name="isTrending" /> Marcar como contenido en tendencia</label>
                 <label>Proponer nueva categoría o subcategoría (opcional)</label>
                 <input type="text" name="proposedCategoryName" placeholder="Ej. Escenas románticas mexicanas" />
@@ -152,13 +171,14 @@
                 <label>PDF, Word (.docx), imagen, .txt o .md</label>
                 <input type="file" name="file" accept=".pdf,.docx,.txt,.md,image/*" required />
                 <div class="manager-email-field">
-                  <label>Correo para avisarte cuando se apruebe</label>
+                  <label>Correo vinculado a tu buzón interno</label>
                   <input type="email" name="email" placeholder="correo@ejemplo.com" required />
                 </div>
                 <label>Categoría inicial (opcional)</label>
                 <select name="categoryId" class="category-select"></select>
                 <label>Plataforma o marca (opcional)</label>
-                <select name="platformId" class="platform-select"></select>
+                <select name="platformId" class="platform-select multi-select" multiple size="4"></select>
+                <p class="hint compact">Puedes escoger varias opciones para enviar la aprobación con más de una plataforma o marca.</p>
                 <label>URL del trailer (opcional, TikTok/Facebook/YouTube)</label>
                 <input type="url" name="trailerUrl" placeholder="https://www.youtube.com/watch?v=..." />
                 <label class="checkbox-row"><input type="checkbox" name="isTrending" /> Marcar como contenido en tendencia</label>
@@ -172,13 +192,14 @@
                 <label>URL de la página</label>
                 <input type="url" name="url" placeholder="https://ejemplo.com/articulo" required />
                 <div class="manager-email-field">
-                  <label>Correo para avisarte cuando se apruebe</label>
+                  <label>Correo vinculado a tu buzón interno</label>
                   <input type="email" name="email" placeholder="correo@ejemplo.com" required />
                 </div>
                 <label>Categoría inicial (opcional)</label>
                 <select name="categoryId" class="category-select"></select>
                 <label>Plataforma o marca (opcional)</label>
-                <select name="platformId" class="platform-select"></select>
+                <select name="platformId" class="platform-select multi-select" multiple size="4"></select>
+                <p class="hint compact">Puedes escoger varias opciones para enviar la aprobación con más de una plataforma o marca.</p>
                 <label>URL del trailer (opcional, TikTok/Facebook/YouTube)</label>
                 <input type="url" name="trailerUrl" placeholder="https://www.youtube.com/watch?v=..." />
                 <label class="checkbox-row"><input type="checkbox" name="isTrending" /> Marcar como contenido en tendencia</label>
@@ -194,13 +215,14 @@
                 <label>Texto</label>
                 <textarea name="text" rows="6" required placeholder="Escribe o pega cualquier texto..."></textarea>
                 <div class="manager-email-field">
-                  <label>Correo para avisarte cuando se apruebe</label>
+                  <label>Correo vinculado a tu buzón interno</label>
                   <input type="email" name="email" placeholder="correo@ejemplo.com" required />
                 </div>
                 <label>Categoría inicial (opcional)</label>
                 <select name="categoryId" class="category-select"></select>
                 <label>Plataforma o marca (opcional)</label>
-                <select name="platformId" class="platform-select"></select>
+                <select name="platformId" class="platform-select multi-select" multiple size="4"></select>
+                <p class="hint compact">Puedes escoger varias opciones para enviar la aprobación con más de una plataforma o marca.</p>
                 <label>URL del trailer (opcional, TikTok/Facebook/YouTube)</label>
                 <input type="url" name="trailerUrl" placeholder="https://www.youtube.com/watch?v=..." />
                 <label class="checkbox-row"><input type="checkbox" name="isTrending" /> Marcar como contenido en tendencia</label>
@@ -250,6 +272,18 @@
                 <button type="submit">Explorar</button>
               </form>
               <div id="library-results"></div>
+            </section>
+          </section>
+
+          <section class="module-view" data-view="inbox">
+            <section class="card">
+              <h3>Buzón interno</h3>
+              <p class="hint">Aquí aparecen los avisos cuando una película o cualquier contenido enviado se aprueba y publica.</p>
+              <div id="inbox-locked" class="notice-card">
+                Inicia sesión con un usuario interno que tenga buzón disponible para ver sus avisos.
+              </div>
+              <p id="inbox-summary" class="docs-summary"></p>
+              <ul id="inbox-list" class="category-list"></ul>
             </section>
           </section>
 
@@ -404,54 +438,31 @@
       </div>
     </div>
 
-    <div id="login-modal" class="modal" hidden>
+    <div id="session-login-modal" class="modal" hidden>
       <div class="modal-card">
-        <h3>Acceso de administrador</h3>
-        <form id="login-form">
+        <h3>Ingreso al sistema</h3>
+        <p class="hint">Escribe tu usuario y contraseña. El sistema detectará tu acceso y te dirá qué perfil tienes.</p>
+        <form id="session-login-form">
           <label>Usuario</label>
           <input type="text" name="username" required autocomplete="username" />
           <label>Contraseña</label>
           <input type="password" name="password" required autocomplete="current-password" />
           <div class="modal-actions">
-            <button type="button" id="login-cancel" class="ghost">Cancelar</button>
+            <button type="button" id="session-login-cancel" class="ghost">Cancelar</button>
             <button type="submit">Entrar</button>
           </div>
-          <p id="login-error" class="status err"></p>
+          <p id="session-login-error" class="status err"></p>
         </form>
       </div>
     </div>
 
-    <div id="seller-login-modal" class="modal" hidden>
-      <div class="modal-card">
-        <h3>Acceso vendedor</h3>
-        <form id="seller-login-form">
-          <label>Usuario</label>
-          <input type="text" name="username" required autocomplete="username" />
-          <label>Contraseña</label>
-          <input type="password" name="password" required autocomplete="current-password" />
-          <div class="modal-actions">
-            <button type="button" id="seller-login-cancel" class="ghost">Cancelar</button>
-            <button type="submit">Entrar</button>
-          </div>
-          <p id="seller-login-error" class="status err"></p>
-        </form>
-      </div>
-    </div>
-
-    <div id="content-manager-login-modal" class="modal" hidden>
-      <div class="modal-card">
-        <h3>Acceso gestor de contenido</h3>
-        <form id="content-manager-login-form">
-          <label>Usuario</label>
-          <input type="text" name="username" required autocomplete="username" />
-          <label>Contraseña</label>
-          <input type="password" name="password" required autocomplete="current-password" />
-          <div class="modal-actions">
-            <button type="button" id="content-manager-login-cancel" class="ghost">Cancelar</button>
-            <button type="submit">Entrar</button>
-          </div>
-          <p id="content-manager-login-error" class="status err"></p>
-        </form>
+    <div id="video-player-modal" class="modal" hidden>
+      <div class="modal-card modal-card-wide">
+        <div class="modal-head">
+          <h3 id="video-player-title">Vista del video</h3>
+          <button type="button" id="video-player-close" class="ghost">Cerrar</button>
+        </div>
+        <div id="video-player-body"></div>
       </div>
     </div>
 
